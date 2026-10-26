@@ -35,8 +35,7 @@ docker compose up -d
 The container listens on port 8088 on localhost only. Put a reverse proxy with
 TLS in front of it; an nginx example is in [`deploy/nginx-scan.conf`](deploy/nginx-scan.conf).
 
-The page has a commented placeholder for an imprint and abuse contact at the end
-of [`static/index.html`](static/index.html). Fill it in before you go public.
+Set `CMSWEB_OPERATOR` and `CMSWEB_CONTACT` so the page says who runs it.
 
 ### Updates
 
@@ -49,6 +48,9 @@ docker compose pull && docker compose up -d
 | Variable | Default | Purpose |
 |---|---|---|
 | `CMSWEB_ORIGIN` | – | Public address, e.g. `https://scan.example.ch`. Requests from other origins are refused. **Set it.** |
+| `CMSWEB_OPERATOR` | – | Name of the person or company running the service, shown on the page |
+| `CMSWEB_CONTACT` | – | Contact e-mail shown on the page |
+| `CMSWEB_IMPRINT_URL` | – | Optional link to an existing imprint page |
 | `CMSWEB_TRUSTED_PROXY` | `127.0.0.1,::1` | Proxy addresses or networks whose `X-Real-IP` header is trusted |
 | `CMSWEB_DENY_HOSTS` | – | Domains (incl. subdomains) that may never be checked, comma-separated |
 | `CMSWEB_DENY_IPS` | – | Additional target IPs that may never be checked |

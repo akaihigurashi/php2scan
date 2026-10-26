@@ -536,7 +536,29 @@ class App:
                             ("style.css", "text/css; charset=utf-8")):
             with open(os.path.join(HERE, "static", name), "rb") as f:
                 self.static["/" + name] = (f.read(), ctype)
-        self.static["/"] = self.static["/index.html"]
+        page, ctype = self.static["/index.html"]
+        page = page.replace(b"<!--OPERATOR-->", self.operator_html().encode("utf-8"))
+        self.static["/index.html"] = self.static["/"] = (page, ctype)
+
+    def operator_html(self):
+        """'Contact' section from CMSWEB_OPERATOR / CMSWEB_CONTACT / CMSWEB_IMPRINT_URL."""
+        esc = lambda s: (s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                         .replace('"', "&quot;"))
+        name, mail, url = self.a.operator.strip(), self.a.contact.strip(), self.a.imprint_url.strip()
+        if not (name or mail or url):
+            log("WARNING: no operator/contact set (CMSWEB_OPERATOR, CMSWEB_CONTACT) - "
+                "the page shows no responsible person")
+            return ""
+        parts = []
+        if name:
+            parts.append(f"This service is run by {esc(name)}.")
+        if mail:
+            parts.append(f'Questions, removal requests or abuse reports: '
+                         f'<a href="mailto:{esc(mail)}">{esc(mail)}</a>.')
+        html = "    <h2>Contact</h2>\n    <p>" + " ".join(parts) + "</p>\n"
+        if url.startswith(("https://", "http://")):
+            html += f'    <p><a href="{esc(url)}">Imprint</a></p>\n'
+        return html
 
     def own_ips(self):
         """Current public addresses of this service's own hostname (re-resolved, so a
@@ -753,6 +775,12 @@ def main():
     ap.add_argument("--audit-dir", default=env("CMSWEB_AUDIT_DIR", ""),
                     help="directory for the daily JSON-lines audit log of every check "
                          "(default: stderr / journal)")
+    ap.add_argument("--operator", default=env("CMSWEB_OPERATOR", ""),
+                    help="name of the person/company running the service (shown on the page)")
+    ap.add_argument("--contact", default=env("CMSWEB_CONTACT", ""),
+                    help="contact e-mail shown on the page (questions, abuse reports)")
+    ap.add_argument("--imprint-url", default=env("CMSWEB_IMPRINT_URL", ""),
+                    help="optional link to an existing imprint page")
     ap.add_argument("--retention-days", type=int, default=int(env("CMSWEB_RETENTION_DAYS", "30")),
                     help="delete audit log files older than this (default 30, matches the privacy notice)")
     ap.add_argument("--access-log", action="store_true", help="also log every HTTP request")

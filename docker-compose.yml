@@ -8,6 +8,10 @@ services:
     environment:
       # Your public address - the API only accepts requests from this origin.
       CMSWEB_ORIGIN: "https://scan.example.ch"
+      # Who runs the service - shown at the bottom of the page:
+      CMSWEB_OPERATOR: "Your Name"
+      CMSWEB_CONTACT: "abuse@example.ch"
+      # CMSWEB_IMPRINT_URL: "https://www.example.ch/imprint"   # optional, if you have one
       # nginx on the host reaches the container via this network's gateway:
       CMSWEB_TRUSTED_PROXY: "172.30.250.1"
       # Never check these domains / IPs (comma-separated), e.g. your own servers:
