@@ -1,0 +1,10 @@
+state/
+audit/
+__pycache__/
+*.pyc
+.git/
+.github/
+deploy/
+docs/
+README.md
+LICENSE

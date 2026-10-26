@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PHP2Shell Checker</title>
+<meta name="description" content="Check whether your website's PHP version is affected by PHP2Shell (CVE-2026-109618 / CVE-2026-109619), and which PHP version and applications it reveals.">
+<meta name="robots" content="index, nofollow">
+<link rel="stylesheet" href="/style.css">
+<script src="/app.js" defer></script>
+</head>
+<body>
+<main>
+  <header class="intro">
+    <p class="site">PHP2Shell Checker</p>
+    <h1>Is your website affected by&nbsp;PHP2Shell?</h1>
+    <p class="lede">PHP2Shell (CVE-2026-109618 and CVE-2026-109619) is a critical vulnerability
+      in PHP that lets attackers run code on a web server. Enter your website's address to see
+      which PHP version and applications it reveals, and whether that version is patched.</p>
+  </header>
+
+  <form id="check" novalidate>
+    <label for="host" class="field-label">Website address</label>
+    <div class="field-row">
+      <input id="host" name="host" type="text" inputmode="url" autocomplete="url"
+             autocapitalize="off" spellcheck="false" placeholder="www.example.ch" required>
+      <button type="submit" id="go">Check website</button>
+    </div>
+    <label class="consent">
+      <input type="checkbox" id="consent" required>
+      <span>I own this website or have the owner's permission to have it checked.</span>
+    </label>
+    <p class="fineprint">The check loads your start page the same way a browser does.</p>
+    <p class="warning">All checks are logged. Abuse may be reported to the authorities.</p>
+  </form>
+
+  <section id="result" aria-live="polite" tabindex="-1" hidden></section>
+
+  <footer>
+    <h2>How it works</h2>
+    <p>We load the start page of your website and compare what it sends back with known
+      fingerprints of PHP applications.</p>
+    <h2>Rules of use</h2>
+    <p>Only check websites you own or have permission to check. All checks are logged, and
+      abuse may be reported to the authorities.</p>
+    <h2>Privacy</h2>
+    <p>For every check we store the time, your IP address, your browser's name and the checked
+      address, to prevent and investigate abuse. These records are deleted after 30 days,
+      unless they are needed to report or investigate a specific case of misuse.
+      No cookies, no tracking, no third-party content.</p>
+    <!-- Add your imprint / contact here, e.g.:
+    <p><a href="https://www.example.ch/imprint">Imprint</a> · <a href="mailto:abuse@example.ch">Report abuse</a></p>
+    -->
+  </footer>
+</main>
+</body>
+</html>

@@ -1,0 +1,51 @@
+services:
+  php2shell-checker:
+    image: ghcr.io/akaihigurashi/php2shell-checker:latest
+    # build: .          # uncomment to build from a clone instead of pulling
+    container_name: php2shell-checker
+    restart: unless-stopped
+
+    environment:
+      # Your public address - the API only accepts requests from this origin.
+      CMSWEB_ORIGIN: "https://scan.example.ch"
+      # nginx on the host reaches the container via this network's gateway:
+      CMSWEB_TRUSTED_PROXY: "172.30.250.1"
+      # Never check these domains / IPs (comma-separated), e.g. your own servers:
+      # CMSWEB_DENY_HOSTS: "example.ch,intranet.example.ch"
+      # CMSWEB_DENY_IPS: "203.0.113.10"
+
+    # only reachable from the host itself - nginx does TLS and forwards to it
+    ports:
+      - "127.0.0.1:8088:8088"
+
+    volumes:
+      - php2shell-data:/data
+
+    networks:
+      - php2shell
+
+    # hardening
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    pids_limit: 128
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  php2shell:
+    ipam:
+      config:
+        - subnet: 172.30.250.0/24
+          gateway: 172.30.250.1
+
+volumes:
+  php2shell-data:
