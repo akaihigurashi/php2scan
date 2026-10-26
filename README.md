@@ -1,4 +1,9 @@
-# php2scan
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/logo-dark.png">
+    <img alt="php2scan" src="docs/logo-light.png" width="334">
+  </picture>
+</h1>
 
 A self-hosted web page that checks whether a website is affected by **PHP2Shell**
 (CVE-2026-109618 / CVE-2026-109619), the critical remote code execution

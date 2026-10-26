@@ -64,11 +64,61 @@ a { color: var(--accent); }
 
 /* intro ---------------------------------------------------------------- */
 
-.site {
-  margin: 0 0 2.5rem;
-  font-weight: 600;
-  color: var(--ink-soft);
+/* top bar: wordmark + GitHub ------------------------------------------- */
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin: 0 0 3rem;
 }
+
+.wordmark {
+  display: inline-flex;
+  align-items: baseline;
+  font: 700 clamp(1.9rem, 5vw, 2.4rem)/1 var(--mono);
+  letter-spacing: -0.04em;
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.wordmark .wm-2 {
+  display: inline-block;
+  margin: 0 0.06em;
+  padding: 0.04em 0.14em 0.06em;
+  border-radius: 0.14em;
+  background: var(--accent);
+  color: var(--accent-ink);
+  transform: translateY(-0.04em) rotate(-6deg);
+}
+
+.wordmark .wm-scan { color: var(--accent); }
+
+.wordmark:hover .wm-2 { transform: translateY(-0.04em) rotate(0deg); }
+
+@media (prefers-reduced-motion: no-preference) {
+  .wordmark .wm-2 { transition: transform 0.2s ease; }
+}
+
+.gh {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-weight: 600;
+  font-size: 0.925rem;
+  color: var(--ink);
+  text-decoration: none;
+  padding: 0.45rem 0.75rem;
+  border: 1.5px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.gh:hover { border-color: var(--ink-soft); }
+
+.lede a { color: var(--accent); text-underline-offset: 0.15em; white-space: nowrap; }
 
 h1 {
   font-family: var(--serif);
