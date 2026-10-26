@@ -12,7 +12,7 @@ services:
       CMSWEB_TRUSTED_PROXY: "172.30.250.1"
       # Never check these domains / IPs (comma-separated), e.g. your own servers:
       # CMSWEB_DENY_HOSTS: "example.ch,intranet.example.ch"
-      # CMSWEB_DENY_IPS: "203.0.113.10"
+      # CMSWEB_DENY_IPS: "203.0.113.10"   (your own server is excluded automatically)
 
     # only reachable from the host itself - nginx does TLS and forwards to it
     ports:

@@ -51,7 +51,7 @@ docker compose pull && docker compose up -d
 | `CMSWEB_ORIGIN` | – | Public address, e.g. `https://scan.example.ch`. Requests from other origins are refused. **Set it.** |
 | `CMSWEB_TRUSTED_PROXY` | `127.0.0.1,::1` | Proxy addresses or networks whose `X-Real-IP` header is trusted |
 | `CMSWEB_DENY_HOSTS` | – | Domains (incl. subdomains) that may never be checked, comma-separated |
-| `CMSWEB_DENY_IPS` | – | Target IPs that may never be checked, e.g. your own server |
+| `CMSWEB_DENY_IPS` | – | Additional target IPs that may never be checked |
 | `CMSWEB_AUDIT_DIR` | `/data/audit` | Daily audit log files |
 | `CMSWEB_RETENTION_DAYS` | `30` | Audit files older than this are deleted |
 
@@ -69,6 +69,10 @@ network gateway `172.30.250.1`, which is why that address is the trusted proxy.
 - Only hostnames are accepted. Every address they resolve to must be public, the
   connection is pinned to the checked address, and redirects are only followed on
   the same server, so the service can't be pointed at internal networks.
+- Some websites are never checked: large well-known services, government and
+  military sites, sites in or hosted in a list of countries, and the server the
+  checker itself runs on (the domain from `CMSWEB_ORIGIN` and its addresses).
+  The lists are at the top of [`cmsweb.py`](cmsweb.py).
 - The container runs as an unprivileged user with a read-only filesystem.
 
 ### Handling misuse

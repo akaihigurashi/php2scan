@@ -33,6 +33,7 @@ import socket
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -57,6 +58,57 @@ BLOCKLISTS = {
             "https://raw.githubusercontent.com/SecOps-Institute/Tor-IP-Addresses/master/tor-exit-nodes.lst"],
 }
 BLOCKLIST_REFRESH = 6 * 3600
+
+# --- targets that are NEVER checked (hard-coded, not configurable) ------------
+# Well-known organisations, governments and militaries: the domain and all subdomains.
+NEVER_CHECK_DOMAINS = {
+    # search, cloud, software
+    "google.com", "google.ch", "googleapis.com", "gstatic.com", "googleusercontent.com", "youtube.com",
+    "gmail.com", "android.com", "blogger.com", "blogspot.com", "withgoogle.com", "appspot.com", "goo.gl",
+    "microsoft.com", "microsoftonline.com", "live.com", "outlook.com", "office.com", "office365.com",
+    "windows.net", "windows.com", "azure.com", "azurewebsites.net", "bing.com", "msn.com", "skype.com",
+    "linkedin.com", "github.com", "github.io", "githubusercontent.com", "xbox.com", "sharepoint.com",
+    "apple.com", "icloud.com", "me.com", "mzstatic.com",
+    "amazon.com", "amazon.de", "amazon.co.uk", "amazonaws.com", "cloudfront.net", "aws.amazon.com", "a2z.com",
+    "meta.com", "facebook.com", "fb.com", "fbcdn.net", "instagram.com", "whatsapp.com", "whatsapp.net",
+    "messenger.com", "threads.net",
+    "x.com", "twitter.com", "t.co", "twimg.com", "tiktok.com", "snapchat.com", "reddit.com", "pinterest.com",
+    "discord.com", "discord.gg", "telegram.org", "t.me", "signal.org", "zoom.us", "slack.com",
+    "cloudflare.com", "cloudflare.net", "akamai.com", "akamai.net", "akamaiedge.net", "fastly.com",
+    "fastly.net", "oracle.com", "ibm.com", "sap.com", "salesforce.com", "adobe.com", "cisco.com",
+    "intel.com", "nvidia.com", "amd.com", "samsung.com", "dell.com", "hp.com", "vmware.com", "broadcom.com",
+    "openai.com", "chatgpt.com", "anthropic.com", "claude.ai", "mozilla.org", "wikipedia.org",
+    "wikimedia.org", "netflix.com", "spotify.com", "paypal.com", "stripe.com", "visa.com", "mastercard.com",
+    "ebay.com", "alibaba.com", "aliexpress.com", "booking.com", "airbnb.com", "uber.com",
+    # Swiss: federal administration, big providers, banks
+    "admin.ch", "ch.ch", "parlament.ch", "bundesregierung.de", "bundestag.de", "swisscom.ch", "swisscom.com", "sunrise.ch", "salt.ch", "post.ch", "sbb.ch",
+    "ubs.com", "ubs.ch", "credit-suisse.com", "postfinance.ch", "raiffeisen.ch", "zkb.ch", "snb.ch",
+    "six-group.com", "switch.ch", "nic.ch",
+    # international organisations
+    "un.org", "who.int", "nato.int", "europa.eu", "icann.org", "iana.org", "ietf.org",
+}
+# Government / military top-level and second-level labels ("*.gov", "*.gov.uk", "*.mil.br", ...)
+NEVER_CHECK_LABELS = {"gov", "mil", "gouv", "gob", "govt", "go", "gv", "bund", "admin", "army", "navy", "police"}
+NEVER_CHECK_TLDS = {"gov", "mil", "int", "edu"}
+
+# Countries whose websites are never checked: their country domains and any site whose
+# server is located there (IP ranges from the regional internet registries).
+BLOCKED_COUNTRIES = {
+    "RU": ["ru", "su", "xn--p1ai"],                       # Russia (.рф)
+    "BY": ["by", "xn--90ais"],                            # Belarus (.бел)
+    "CN": ["cn", "xn--fiqs8s", "xn--fiqz9s"],             # China (.中国 / .中國)
+    "HK": ["hk", "xn--j6w193g"],                          # Hong Kong
+    "MO": ["mo"],                                         # Macau
+    "IR": ["ir", "xn--mgba3a4f16a"],                      # Iran (.ایران)
+    "KP": ["kp"],                                         # North Korea
+    "SY": ["sy", "xn--ogbpf8fl"],                         # Syria
+    "CU": ["cu"],                                         # Cuba
+    "AF": ["af"],                                         # Afghanistan
+    "MM": ["mm"],                                         # Myanmar
+    "VE": ["ve"],                                         # Venezuela
+}
+GEO_URL = "https://raw.githubusercontent.com/ipverse/country-ip-blocks/master/country/{cc}/{fam}-aggregated.txt"
+GEO_REFRESH = 24 * 3600
 
 # PHP2Shell (CVE-2026-109618 / -109619): first fixed upstream release per branch
 PHP_FIXED = {"8.2": "8.2.35", "8.3": "8.3.36", "8.4": "8.4.27", "8.5": "8.5.12"}
@@ -177,6 +229,72 @@ class Blocklists:
         return ""
 
 
+class TargetGeo:
+    """IP ranges of BLOCKED_COUNTRIES (for targets). Always on, fail-closed: while no
+    list is available, no website can be checked."""
+
+    def __init__(self, state_dir):
+        self.path = os.path.join(state_dir, "blocklists", "target-countries.txt")
+        self.ranges = None
+        self.lock = threading.Lock()
+
+    def _download(self):
+        lines = []
+        for cc in BLOCKED_COUNTRIES:
+            for fam in ("ipv4", "ipv6"):
+                url = GEO_URL.format(cc=cc.lower(), fam=fam)
+                req = urllib.request.Request(url, headers={"User-Agent": "cmsweb blocklist updater"})
+                try:
+                    with urllib.request.urlopen(req, timeout=30) as r:
+                        got = [l.split("#")[0].strip() for l in r.read().decode("utf-8", "replace").splitlines()]
+                except urllib.error.HTTPError as e:
+                    if e.code == 404:            # e.g. a country without IPv6 allocations
+                        continue
+                    raise
+                lines += [l for l in got if l]
+        if len(lines) < 1000:                    # partial / broken download: keep the old one
+            raise ValueError(f"only {len(lines)} ranges")
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        with open(self.path + ".tmp", "w") as f:
+            f.write("\n".join(lines))
+        os.replace(self.path + ".tmp", self.path)
+        return lines
+
+    def refresh(self):
+        try:
+            lines = self._download()
+        except Exception as e:  # noqa: BLE001
+            log(f"target country list: download failed: {e}")
+            lines = None
+            if os.path.exists(self.path):
+                with open(self.path) as f:
+                    lines = f.read().splitlines()
+        if lines:
+            rs = RangeSet(lines)
+            with self.lock:
+                self.ranges = rs
+            log(f"target country list: {rs.size} ranges ({', '.join(BLOCKED_COUNTRIES)})")
+        elif self.ranges is None:
+            log("target country list: NOT AVAILABLE - checks are refused until it can be loaded")
+
+    def start(self):
+        self.refresh()
+
+        def loop():
+            while True:
+                time.sleep(GEO_REFRESH if self.ranges is not None else 300)
+                self.refresh()
+        threading.Thread(target=loop, daemon=True).start()
+
+    def blocked(self, ip):
+        """True if ip is in a blocked country, None if the list isn't available yet."""
+        with self.lock:
+            rs = self.ranges
+        if rs is None:
+            return None
+        return ip in rs
+
+
 # ---------------------------------------------------------------------------
 # sliding-window rate limiter
 # ---------------------------------------------------------------------------
@@ -245,19 +363,55 @@ def is_public(ip):
                                 or a.is_link_local or a.is_private)
 
 
-def resolve_target(host, allow_private, deny_ips, deny_hosts):
+NOT_ALLOWED = "This website can't be checked with this service."
+BLOCKED_TLDS = {t for tlds in BLOCKED_COUNTRIES.values() for t in tlds}
+
+
+def never_check(host):
+    """Hard-coded exclusions by name. Returns a short reason for the audit log, or ''."""
+    labels = host.split(".")
+    if labels[-1] in BLOCKED_TLDS:
+        return "country-tld"
+    if labels[-1] in NEVER_CHECK_TLDS:
+        return "gov-tld"
+    # second-level government / military zones of country domains: gov.uk, gouv.fr, gv.at, go.jp ...
+    if len(labels) >= 3 and len(labels[-1]) == 2 and labels[-2] in NEVER_CHECK_LABELS:
+        return "gov-sld"
+    for i in range(len(labels) - 1):                         # domain and all its subdomains
+        if ".".join(labels[i:]) in NEVER_CHECK_DOMAINS:
+            return "well-known"
+    return ""
+
+
+def resolve_target(host, allow_private, deny_ips, deny_hosts, geo):
+    """Returns (ip, '') or raises TargetError(user message) with .reason for the audit log."""
+    def refuse(reason, msg=NOT_ALLOWED):
+        e = TargetError(msg)
+        e.reason = reason
+        raise e
+
+    why = never_check(host)
+    if why:
+        refuse(why)
     if any(host == d or host.endswith("." + d) for d in deny_hosts):
-        raise TargetError("This hostname cannot be checked with this service.")
+        refuse("deny-host")
     try:
         infos = socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)
     except (OSError, UnicodeError):
-        raise TargetError("The hostname does not resolve.")
+        refuse("no-dns", "The hostname does not resolve.")
     ips = sorted({i[4][0] for i in infos}, key=lambda x: (":" in x, x))   # IPv4 first
     if not ips:
-        raise TargetError("The hostname does not resolve.")
-    for ip in ips:                                          # ALL addresses must be public
-        if (not allow_private and not is_public(ip)) or ip in deny_ips:
-            raise TargetError("This hostname points to a non-public address and cannot be checked.")
+        refuse("no-dns", "The hostname does not resolve.")
+    for ip in ips:                                          # ALL addresses are checked
+        if not allow_private and not is_public(ip):
+            refuse("non-public", "This hostname points to a non-public address and cannot be checked.")
+        if ip in deny_ips:
+            refuse("deny-ip")
+        in_country = geo.blocked(ip)
+        if in_country is None:
+            refuse("geo-unavailable", "The service is temporarily unavailable. Please try again later.")
+        if in_country:
+            refuse("country-ip")
     return ips[0]
 
 
@@ -361,6 +515,13 @@ class App:
     def __init__(self, a):
         self.a = a
         self.blocklists = Blocklists(a.state_dir, not a.no_blocklists, a.fail_closed)
+        self.geo = TargetGeo(a.state_dir)
+        # never check the server this runs on: the origin's domain (+ subdomains) and
+        # every address it resolves to (which also covers all other sites on that server)
+        self.own_host = (re.sub(r"^[a-z]+://", "", a.origin.lower()).split("/")[0].split(":")[0]
+                         if a.origin else "")
+        self.own_domains = {d for d in {self.own_host, cmsscan.base_domain(self.own_host)} if d} \
+            if self.own_host and not cmsscan.is_ip(self.own_host) else set()
         self.limiter = Limiter()
         self.sem = threading.BoundedSemaphore(MAX_CONCURRENT)
         self.cache, self.cache_lock = {}, threading.Lock()
@@ -376,6 +537,18 @@ class App:
             with open(os.path.join(HERE, "static", name), "rb") as f:
                 self.static["/" + name] = (f.read(), ctype)
         self.static["/"] = self.static["/index.html"]
+
+    def own_ips(self):
+        """Current public addresses of this service's own hostname (re-resolved, so a
+        changed server IP is picked up). Includes any address given in the origin."""
+        if not self.own_host:
+            return set()
+        if cmsscan.is_ip(self.own_host):
+            return {self.own_host.strip("[]")}
+        try:
+            return {i[4][0] for i in socket.getaddrinfo(self.own_host, 443, proto=socket.IPPROTO_TCP)}
+        except OSError:
+            return set()
 
     def audit(self, **entry):
         """One JSON line per check. With --audit-dir: one file per day, files older than
@@ -442,9 +615,12 @@ class App:
             return 200, {**hit[1], "cached": True, "checked_at": hit[2]}, {}
 
         try:
-            ip = resolve_target(host, self.a.allow_private_targets, self.deny_ips, self.deny_hosts)
+            ip = resolve_target(host, self.a.allow_private_targets,
+                                self.deny_ips | self.own_ips(), self.deny_hosts | self.own_domains,
+                                self.geo)
         except TargetError as e:
-            self.audit(client=client_ip, target=host, consent=CONSENT_VERSION, outcome=f"rejected:{e}")
+            self.audit(client=client_ip, target=host, consent=CONSENT_VERSION,
+                       outcome=f"rejected:{getattr(e, 'reason', e)}")
             return 400, {"error": str(e)}, {}
 
         if not self.sem.acquire(blocking=False):
@@ -604,6 +780,10 @@ def main():
 
     app = App(a)
     app.blocklists.start()
+    app.geo.start()
+    if app.own_host:
+        log(f"never checked (own server): {', '.join(sorted(app.own_domains)) or '-'} "
+            f"+ addresses {', '.join(sorted(app.own_ips())) or '(not resolvable yet)'}")
     server = ThreadingHTTPServer((a.bind, a.port), make_handler(app))
     server.daemon_threads = True
     log(f"cmsweb listening on http://{a.bind}:{a.port}")
