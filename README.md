@@ -1,4 +1,4 @@
-# PHP2Shell Checker
+# php2scan
 
 A self-hosted web page that checks whether a website is affected by **PHP2Shell**
 (CVE-2026-109618 / CVE-2026-109619), the critical remote code execution
@@ -18,11 +18,11 @@ loads the site's start page like a browser would and reports:
 ## Run it with Docker
 
 ```bash
-docker run -d --name php2shell-checker --restart unless-stopped \
+docker run -d --name php2scan --restart unless-stopped \
   -p 127.0.0.1:8088:8088 \
   -e CMSWEB_ORIGIN=https://scan.example.ch \
-  -v php2shell-data:/data \
-  ghcr.io/akaihigurashi/php2shell-checker:latest
+  -v php2scan-data:/data \
+  ghcr.io/akaihigurashi/php2scan:latest
 ```
 
 Or with Compose: download [`docker-compose.yml`](docker-compose.yml), set
@@ -35,8 +35,6 @@ docker compose up -d
 The container listens on port 8088 on localhost only. Put a reverse proxy with
 TLS in front of it; an nginx example is in [`deploy/nginx-scan.conf`](deploy/nginx-scan.conf).
 
-Set `CMSWEB_OPERATOR` and `CMSWEB_CONTACT` so the page says who runs it.
-
 ### Updates
 
 ```bash
@@ -48,8 +46,8 @@ docker compose pull && docker compose up -d
 | Variable | Default | Purpose |
 |---|---|---|
 | `CMSWEB_ORIGIN` | – | Public address, e.g. `https://scan.example.ch`. Requests from other origins are refused. **Set it.** |
-| `CMSWEB_OPERATOR` | – | Name of the person or company running the service, shown on the page |
-| `CMSWEB_CONTACT` | – | Contact e-mail shown on the page |
+| `CMSWEB_OPERATOR` | – | Optional: name shown in a contact section at the bottom of the page |
+| `CMSWEB_CONTACT` | – | Optional: contact e-mail shown in that section |
 | `CMSWEB_IMPRINT_URL` | – | Optional link to an existing imprint page |
 | `CMSWEB_TRUSTED_PROXY` | `127.0.0.1,::1` | Proxy addresses or networks whose `X-Real-IP` header is trusted |
 | `CMSWEB_DENY_HOSTS` | – | Domains (incl. subdomains) that may never be checked, comma-separated |
@@ -80,7 +78,7 @@ network gateway `172.30.250.1`, which is why that address is the trusted proxy.
 ### Handling misuse
 
 1. Copy the relevant audit files before they expire:
-   `docker compose cp php2shell-checker:/data/audit/audit-2026-10-26.jsonl .`
+   `docker compose cp php2scan:/data/audit/audit-2026-10-26.jsonl .`
 2. Block the visitor at the reverse proxy if needed.
 3. Report it to the visitor's network provider (`whois <ip> | grep -i abuse`) and,
    in Switzerland, to the Federal Office for Cyber Security
@@ -103,9 +101,9 @@ Only scan systems you are authorized to test.
 ## Build it yourself
 
 ```bash
-git clone https://github.com/akaihigurashi/php2shell-checker.git
-cd php2shell-checker
-docker build -t php2shell-checker .
+git clone https://github.com/akaihigurashi/php2scan.git
+cd php2scan
+docker build -t php2scan .
 ```
 
 Every push to `main` builds the image for amd64 and arm64 and publishes it to the

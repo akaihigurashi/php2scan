@@ -1,17 +1,17 @@
 services:
-  php2shell-checker:
-    image: ghcr.io/akaihigurashi/php2shell-checker:latest
+  php2scan:
+    image: ghcr.io/akaihigurashi/php2scan:latest
     # build: .          # uncomment to build from a clone instead of pulling
-    container_name: php2shell-checker
+    container_name: php2scan
     restart: unless-stopped
 
     environment:
       # Your public address - the API only accepts requests from this origin.
       CMSWEB_ORIGIN: "https://scan.example.ch"
-      # Who runs the service - shown at the bottom of the page:
-      CMSWEB_OPERATOR: "Your Name"
-      CMSWEB_CONTACT: "abuse@example.ch"
-      # CMSWEB_IMPRINT_URL: "https://www.example.ch/imprint"   # optional, if you have one
+      # Optional: a contact section at the bottom of the page
+      # CMSWEB_OPERATOR: "Your Name"
+      # CMSWEB_CONTACT: "abuse@example.ch"
+      # CMSWEB_IMPRINT_URL: "https://www.example.ch/imprint"
       # nginx on the host reaches the container via this network's gateway:
       CMSWEB_TRUSTED_PROXY: "172.30.250.1"
       # Never check these domains / IPs (comma-separated), e.g. your own servers:
@@ -23,10 +23,10 @@ services:
       - "127.0.0.1:8088:8088"
 
     volumes:
-      - php2shell-data:/data
+      - php2scan-data:/data
 
     networks:
-      - php2shell
+      - php2scan
 
     # hardening
     read_only: true
@@ -45,11 +45,11 @@ services:
         max-file: "3"
 
 networks:
-  php2shell:
+  php2scan:
     ipam:
       config:
         - subnet: 172.30.250.0/24
           gateway: 172.30.250.1
 
 volumes:
-  php2shell-data:
+  php2scan-data:

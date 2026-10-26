@@ -1,7 +1,7 @@
-# PHP2Shell Checker - public website PHP / CMS check
+# php2scan - check websites for PHP2Shell (public website PHP / CMS check)
 FROM python:3.13-slim
 
-LABEL org.opencontainers.image.title="php2shell-checker" \
+LABEL org.opencontainers.image.title="php2scan" \
       org.opencontainers.image.description="Check whether a website is affected by PHP2Shell (CVE-2026-109618 / CVE-2026-109619)" \
       org.opencontainers.image.licenses="GPL-3.0-only"
 
