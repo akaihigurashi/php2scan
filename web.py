@@ -775,6 +775,25 @@ class App:
         return 200, {"enabled": True, "trusted": name,
                      "until": time.strftime("%Y-%m-%d", time.gmtime(exp))}, {"Set-Cookie": cookie}
 
+    @staticmethod
+    def cache_key(host, options, trusted):
+        key = host + ("|" + json.dumps(options, sort_keys=True) if options else "")
+        return f"t:{trusted}:{key}" if trusted else key
+
+    def cached_view(self, client_ip, data, trusted):
+        """A result that was checked within the last hour, without checking again: no request
+        to the website, so no consent, no rate limit. 404 if there is none."""
+        try:
+            host = normalize_host(data.get("host"), allow_ip=bool(trusted))
+        except TargetError as e:
+            return 400, {"error": str(e)}, {}
+        key = self.cache_key(host, engine.web_options(data), trusted)
+        with self.cache_lock:
+            hit = self.cache.get(key)
+        if not hit or time.time() - hit[0] >= CACHE_TTL:
+            return 404, {"error": "No recent result for this address."}, {}
+        return 200, {**hit[1], "cached": True, "checked_at": hit[2]}, {}
+
     def handle_scan(self, client_ip, body, ua, trusted=None):
         """Returns (http_status, payload dict, extra headers). trusted: name of a valid
         access key cookie - no rate limit, cache or client checks, wider target rules."""
@@ -784,6 +803,8 @@ class App:
             return 400, {"error": "Invalid request."}, {}
         if not isinstance(data, dict):
             return 400, {"error": "Invalid request."}, {}
+        if data.get("cached_only") is True:          # "Details" from Check all: show, never scan
+            return self.cached_view(client_ip, data, trusted)
         if data.get("consent") is not True:
             return 400, {"error": "Please confirm that you are authorized to have this website checked."}, {}
 
@@ -806,10 +827,10 @@ class App:
             return 400, {"error": str(e)}, {}
         options = engine.web_options(data)                  # e.g. {"probe": True}, validated
         opt = {"options": options} if options else {}       # only logged when used
-        key = host + ("|" + json.dumps(options, sort_keys=True) if options else "")
+        key = self.cache_key(host, options, trusted)
 
         with self.cache_lock:
-            hit = None if trusted else self.cache.get(key)
+            hit = None if trusted else self.cache.get(key)  # key holders always get a fresh check
         if hit and time.time() - hit[0] < CACHE_TTL:
             self.audit(client=client_ip, target=host, consent=CONSENT_VERSION, ua=ua[:200], outcome="cached",
                        **opt)
@@ -844,11 +865,12 @@ class App:
         finally:
             self.sem.release()
         checked_at = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime())
-        if not trusted:          # a key holder may check sites the public can't: never cache those
-            with self.cache_lock:
-                self.cache[key] = (time.time(), result, checked_at)
-                for k in [k for k, v in self.cache.items() if time.time() - v[0] > CACHE_TTL]:
-                    del self.cache[k]
+        # key holders' results go to their own cache entry (they may check sites the public
+        # can't), only used to show them the result again via cached_only
+        with self.cache_lock:
+            self.cache[key] = (time.time(), result, checked_at)
+            for k in [k for k, v in self.cache.items() if time.time() - v[0] > CACHE_TTL]:
+                del self.cache[k]
         self.audit(client=client_ip, target=host, ip=ip, consent=CONSENT_VERSION, ua=ua[:200],
                    **engine.audit_fields(result), **opt, **tr)
         return 200, {**result, "cached": False, "checked_at": checked_at}, {}
