@@ -103,6 +103,45 @@ python3 cmsscan.py -h
 
 Only scan systems you are authorized to test.
 
+### API keys for extra passive DNS sources
+
+AlienVault OTX and HackerTarget are used without keys. VirusTotal, Shodan and
+SecurityTrails need an API key. They are read from environment variables:
+
+| Variable | Source |
+|---|---|
+| `CMSSCAN_VT_KEY` | VirusTotal passive DNS |
+| `CMSSCAN_SHODAN_KEY` | Shodan hostnames/domains |
+| `CMSSCAN_SECURITYTRAILS_KEY` | SecurityTrails reverse-IP lookup |
+
+Keep them in a `.env` file that only you can read and that is never committed:
+
+```bash
+cat > .env <<'EOF'
+CMSSCAN_SHODAN_KEY=...
+CMSSCAN_VT_KEY=...
+EOF
+chmod 600 .env
+grep -qxF .env .gitignore || echo .env >> .gitignore
+```
+
+Load it only for the scan, in a subshell, so the keys don't stay in your shell:
+
+```bash
+( set -a; . ./.env; set +a; python3 cmsscan.py 203.0.113.10 )
+```
+
+Or take them from a password manager / keyring:
+
+```bash
+CMSSCAN_SHODAN_KEY="$(pass show api/shodan)" python3 cmsscan.py 203.0.113.10
+```
+
+`--vt-key`, `--shodan-key` and `--securitytrails-key` still work and override the
+environment, but command-line arguments are visible to every local user (`ps`,
+`/proc/<pid>/cmdline`) and end up in shell history, so the scanner prints a warning
+when they are used. Key values are masked (`***`) in error messages.
+
 ## Build it yourself
 
 ```bash

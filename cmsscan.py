@@ -31,8 +31,11 @@ Complete vhost lists from the servers themselves (best source for --names):
     apache2ctl -S 2>/dev/null | awk '/namevhost/{print $4} /alias/{print $2}' | sort -u
     nginx -T 2>/dev/null | awk '$1=="server_name"{for(i=2;i<=NF;i++){gsub(";","",$i);print $i}}' | sort -u
 
-Passive DNS: OTX and HackerTarget are used by default (no keys). More sources:
-    python3 cmsscan.py 203.0.113.10 --shodan-key KEY --vt-key KEY --securitytrails-key KEY
+Passive DNS: OTX and HackerTarget are used by default (no keys). More sources via API keys,
+read from the environment so they don't show up in `ps` or shell history:
+    CMSSCAN_SHODAN_KEY  CMSSCAN_VT_KEY  CMSSCAN_SECURITYTRAILS_KEY
+    ( set -a; . ./.env; set +a; python3 cmsscan.py 203.0.113.10 )
+    (--shodan-key / --vt-key / --securitytrails-key also work, but expose the key in argv)
     python3 cmsscan.py 203.0.113.10 -n            # no port scan, only 443/80
     python3 cmsscan.py ips.txt -o out.csv         # file input / additional CSV output
     python3 cmsscan.py 203.0.113.10 -a            # also show hidden rows (errors, duplicates)
@@ -1335,7 +1338,17 @@ def pdns_hackertarget(ip, timeout):
     return set(txt.split())
 
 
-API_KEYS = {}   # filled from --vt-key / --shodan-key / --securitytrails-key
+API_KEYS = {}   # filled from CMSSCAN_*_KEY env vars or --vt-key / --shodan-key / --securitytrails-key
+KEY_ENV = {"virustotal": "CMSSCAN_VT_KEY", "shodan": "CMSSCAN_SHODAN_KEY",
+           "securitytrails": "CMSSCAN_SECURITYTRAILS_KEY"}
+
+
+def redact_keys(text):
+    """Remove API key values from text (error messages, debug output)."""
+    for key in API_KEYS.values():
+        if key:
+            text = text.replace(key, "***")
+    return text
 
 
 def pdns_virustotal(ip, timeout):
@@ -1384,7 +1397,7 @@ def passive_dns(ip, timeout=12):
         try:
             return src, {n for n in fn(ip.strip("[]"), timeout) if n}, ""
         except Exception as e:  # noqa: BLE001
-            return src, None, str(e)[:80]
+            return src, None, redact_keys(str(e))[:80]
 
     with cf.ThreadPoolExecutor(max_workers=max(1, len(sources))) as ex:
         for src, got, err in ex.map(ask, sources):
@@ -1559,10 +1572,14 @@ def main():
     ap.add_argument("--no-passive-dns", dest="passive_dns", action="store_false",
                     help="skip passive DNS lookups (default: on - AlienVault OTX and HackerTarget, no "
                          "keys needed; sends the scanned IPs to these services)")
-    ap.add_argument("--vt-key", metavar="KEY", help="VirusTotal API key: adds VirusTotal passive DNS")
-    ap.add_argument("--shodan-key", metavar="KEY", help="Shodan API key: adds Shodan hostnames/domains")
+    ap.add_argument("--vt-key", metavar="KEY",
+                    help="VirusTotal API key: adds VirusTotal passive DNS "
+                         "(prefer env CMSSCAN_VT_KEY; command-line values are visible in ps)")
+    ap.add_argument("--shodan-key", metavar="KEY",
+                    help="Shodan API key: adds Shodan hostnames/domains (prefer env CMSSCAN_SHODAN_KEY)")
     ap.add_argument("--securitytrails-key", metavar="KEY",
-                    help="SecurityTrails API key: adds SecurityTrails reverse-IP lookup")
+                    help="SecurityTrails API key: adds SecurityTrails reverse-IP lookup "
+                         "(prefer env CMSSCAN_SECURITYTRAILS_KEY)")
     ap.add_argument("--names", action="append", default=[], metavar="FILE",
                     help="file with hostnames from your own data (vhost configs, customer domain list); "
                          "names resolving to a scanned IP are checked as vhosts on it. Repeatable.")
@@ -1593,10 +1610,14 @@ def main():
     if a.debug:
         a.all = True
 
-    for src, key in (("virustotal", a.vt_key), ("shodan", a.shodan_key),
-                     ("securitytrails", a.securitytrails_key)):
-        if key:
+    cli_keys = {"virustotal": a.vt_key, "shodan": a.shodan_key, "securitytrails": a.securitytrails_key}
+    for src, env in KEY_ENV.items():
+        key = cli_keys[src] or os.environ.get(env, "")   # command line overrides the environment
+        if key.strip():
             API_KEYS[src] = key.strip()
+    if any(cli_keys.values()):
+        print("Note: API keys on the command line are visible to other local users (ps); "
+              "use the CMSSCAN_*_KEY environment variables instead.", file=sys.stderr, flush=True)
     if a.passive_dns:
         used = ["otx", "hackertarget"] + sorted(API_KEYS)
         print(f"Passive DNS: {', '.join(used)}", file=sys.stderr, flush=True)
