@@ -1638,6 +1638,7 @@ def main():
     rows, counts = [], {}
     scanned = set()      # endpoints found by the scan (may be non-HTTP services)
     W = 44
+    shown = []           # rows for the result table, printed in one block at the end
 
     def add_row(row, hidden=False, key=None):
         rows.append(row)
@@ -1650,7 +1651,7 @@ def main():
             return
         if row[3] in ("ERROR", "NOT HTTP") and not a.all and (len(targets) > 1 or row[0] in scanned):
             return
-        print(f"{row[0]:<{W}} {row[3]:<16} {row[5][:24]:<24} {row[6][:28]:<28} {row[7]}", flush=True)
+        shown.append(row)
 
     # --- phase 1: quick TCP connect scan on web ports ---------------------
     checks = []          # "host:port" or URL items for the HTTP phase
@@ -1688,12 +1689,11 @@ def main():
             else:
                 no_port_rows.append([t, "", "", "ERROR", "", "", "",
                                      f"no open port (scanned {len(ports)} ports)"])
-        print(f"Found {n_open} open port(s), checking each for HTTP/PHP...\n",
+        print(f"Found {n_open} open port(s), checking each for HTTP/PHP...",
               file=sys.stderr, flush=True)
 
     cols = ["target", "final_url", "http_status", "verdict", "php_version",
             "php_apps", "server", "evidence"]
-    print(f"{'TARGET':<{W}} {'VERDICT':<16} {'APPS':<24} {'SERVER':<28} EVIDENCE")
     for row in no_port_rows:
         add_row(row)
     with cf.ThreadPoolExecutor(max_workers=a.workers) as ex:
@@ -1722,9 +1722,9 @@ def main():
                 p = 443 if r[1].startswith("https") else 80
             web.setdefault(h, []).append(p)
         if not web:
-            print("\nNo web server found on any IP, no vhosts to discover.", file=sys.stderr)
+            print("No web server found on any IP, no vhosts to discover.", file=sys.stderr)
         else:
-            print(f"\nDiscovering vhosts on {len(web)} IP(s)...", file=sys.stderr, flush=True)
+            print(f"Discovering vhosts on {len(web)} IP(s)...", file=sys.stderr, flush=True)
             vchecks, vinfo = [], {}
             with cf.ThreadPoolExecutor(max_workers=10) as ex:
                 futs = {ex.submit(discover_vhosts, ip, sorted(set(ps)), a): ip for ip, ps in web.items()}
@@ -1740,8 +1740,9 @@ def main():
                     src_txt = ", ".join(f"{k} {v}" for k, v in sorted(by_src.items()))
                     print(f"[VHOST] {ip}: {len(names)} name(s) ({src_txt or 'none'}), "
                           f"{n_here} resolve to this IP", file=sys.stderr, flush=True)
-                    for line in dlog:
-                        print(f"[VHOST] {ip}: {line}", file=sys.stderr, flush=True)
+                    if DEBUG:
+                        for line in dlog:
+                            print(f"[VHOST] {ip}: {line}", file=sys.stderr, flush=True)
                     for n, srcs in names.items():
                         if DEBUG:
                             print(f"[VHOST]   {n:<40} src={','.join(sorted(srcs)):<16} "
@@ -1760,9 +1761,7 @@ def main():
                             vinfo[vt] = (ip, p, f"[{','.join(sorted(srcs))}; {dns_txt}]")
 
             if vchecks:
-                print(f"Checking {len(vchecks)} vhost endpoint(s)...\n", file=sys.stderr, flush=True)
-                W = max(W, max(len(v) for v in vchecks) + 1)     # long names: keep columns aligned
-                print(f"\n{'VHOST@IP:PORT':<{W}} {'VERDICT':<16} {'APPS':<24} {'SERVER':<28} EVIDENCE")
+                print(f"Checking {len(vchecks)} vhost endpoint(s)...", file=sys.stderr, flush=True)
                 with cf.ThreadPoolExecutor(max_workers=a.workers) as ex:
                     for row in ex.map(lambda t: check(t, a.timeout), vchecks):
                         ip, p, tag = vinfo[row[0]]
@@ -1792,6 +1791,12 @@ def main():
             w.writerow(cols)
             w.writerows(rows)
 
+    if shown:
+        W = max(W, max(len(r[0]) for r in shown) + 1)    # long vhost names: keep columns aligned
+        sys.stderr.flush()
+        print(f"\n{'TARGET':<{W}} {'VERDICT':<16} {'APPS':<24} {'SERVER':<28} EVIDENCE")
+        for row in shown:
+            print(f"{row[0]:<{W}} {row[3]:<16} {row[5][:24]:<24} {row[6][:28]:<28} {row[7]}")
     summary = ", ".join(f"{k}: {v}" for k, v in sorted(counts.items()))
     print(f"\n{len(targets)} target(s), {len(rows)} result(s) ({summary})" + (f" -> {a.out}" if a.out else ""))
 
