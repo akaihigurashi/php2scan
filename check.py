@@ -56,7 +56,7 @@ Verdict column:
 from engine import *  # noqa: F401,F403  # bundle: strip
 
 NAME = "php2scan"
-VERSION = "2.1.0"
+VERSION = "2.1.1"
 DESCRIPTION = "PHP/CMS detection with integrated TCP port scan (PHP2Shell, CVE-2026-109618/-109619)."
 TARGETS = {"PHP"}                # database: PHP and every technology that runs on PHP
 BUILTIN_LABEL = "PHP apps"
