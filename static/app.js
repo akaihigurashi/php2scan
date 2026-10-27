@@ -6,6 +6,9 @@
 (function () {
   const form = document.getElementById("check");
   const hostInput = document.getElementById("host");
+  // "Details" from the landing page's Check all: /?host=www.example.ch fills in the address
+  const preset = new URLSearchParams(location.search).get("host");
+  if (preset) hostInput.value = preset.slice(0, 253);
   const consent = document.getElementById("consent");
   const button = document.getElementById("go");
   const result = document.getElementById("result");

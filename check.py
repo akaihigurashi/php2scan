@@ -56,7 +56,7 @@ Verdict column:
 from engine import *  # noqa: F401,F403  # bundle: strip
 
 NAME = "php2scan"
-VERSION = "2.1.1"
+VERSION = "2.2.0"
 DESCRIPTION = "PHP/CMS detection with integrated TCP port scan (PHP2Shell, CVE-2026-109618/-109619)."
 TARGETS = {"PHP"}                # database: PHP and every technology that runs on PHP
 BUILTIN_LABEL = "PHP apps"
@@ -390,13 +390,31 @@ def web_result(host, ip, row, info, friendly_evidence):
         result["recommendations"].append(
             "Keep PHP and all applications/plugins up to date; the version is hidden, "
             "which is good practice.")
+    result["status"] = web_status(result)      # same shape on every scanner (Check all)
     return result
+
+
+def web_status(result):
+    """{level, title, text}: the one-line answer, same words as the page and the CLI."""
+    if not result["reachable"]:
+        return {"level": "unknown", "title": "Not reachable",
+                "text": result.get("error") or "We couldn't load this website."}
+    if result["php"] and result.get("php_check"):
+        c = result["php_check"]
+        level, title = {"bad": ("bad", "Vulnerable"), "good": ("good", "Patched")}.get(
+            c["status"], ("warn", "Patch status not visible"))
+        return {"level": level, "title": title, "text": c["text"]}
+    return {"level": "good", "title": "No PHP found",
+            "text": "Nothing on the start page points to PHP. It may still use PHP and simply not "
+                    "reveal it, which is good practice."}
 
 
 def web_timeout_result(host, ip):
     return {"host": host, "ip": ip, "reachable": False,
             "error": "The website took too long to respond.", "php": False,
-            "apps": [], "evidence": [], "recommendations": []}
+            "apps": [], "evidence": [], "recommendations": [],
+            "status": {"level": "unknown", "title": "Not reachable",
+                       "text": "The website took too long to respond."}}
 
 
 def audit_fields(result):

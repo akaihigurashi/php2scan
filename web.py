@@ -18,7 +18,8 @@ Abuse protection:
     private / loopback addresses), connection pinned to the checked IP
     (no DNS rebinding), redirects only within the same server
   * hard-coded list of websites that are never checked, and never this server
-  * same-origin check on the API (no driving scans from other websites)
+  * same-origin check on the API (no driving scans from other websites); origins listed in
+    PANIC_EXTRA_ORIGINS (the landing page's "Check all") may call it too, via CORS
 
 Access keys (optional, PANIC_ACCESS_KEYS + PANIC_TRUST_SECRET): people with a key unlock
 once at /unlock (or with a magic link /unlock#k=KEY - the part after # never reaches a
@@ -1123,21 +1124,26 @@ def make_handler(app):
             path = self.path.split("?", 1)[0]
             if path not in ("/api/scan", "/api/unlock", "/api/lock"):
                 return self.send_json(404, {"error": "Not found."})
-            if app.origins and self.headers.get("Origin", "") not in app.origins:
+            origin = self.headers.get("Origin", "")
+            if app.origins and origin not in app.origins:
                 return self.send_json(403, {"error": "Requests are only accepted from the website."})
-            if not (self.headers.get("Content-Type", "").startswith("application/json")):
-                return self.send_json(415, {"error": "Invalid request."})
+            cors = self.cors_headers(origin)
+            # text/plain too: a "simple" cross-origin request needs no preflight (Check all on
+            # the landing page). The Origin check above is what keeps other websites out.
+            ctype = self.headers.get("Content-Type", "")
+            if not ctype.startswith(("application/json", "text/plain")):
+                return self.send_json(415, {"error": "Invalid request."}, cors)
             try:
                 length = int(self.headers.get("Content-Length", "0"))
             except ValueError:
                 length = -1
             if not 0 < length <= 2048:
-                return self.send_json(413, {"error": "Invalid request."})
+                return self.send_json(413, {"error": "Invalid request."}, cors)
             body = self.rfile.read(length)
             ua = self.headers.get("User-Agent", "")
             if path == "/api/lock":
                 return self.send_json(200, {"enabled": app.trust.enabled, "trusted": None},
-                                      {"Set-Cookie": app.trust.clear()})
+                                      {"Set-Cookie": app.trust.clear(), **cors})
             try:
                 if path == "/api/unlock":
                     status, payload, extra = app.handle_unlock(self.client_ip(), body, ua)
@@ -1147,7 +1153,24 @@ def make_handler(app):
             except Exception as e:  # noqa: BLE001
                 log(f"internal error: {e!r}")
                 status, payload, extra = 500, {"error": "Internal error. Please try again later."}, {}
-            self.send_json(status, payload, extra)
+            self.send_json(status, payload, {**extra, **cors})
+
+        def cors_headers(self, origin):
+            """Let the other allowed origins (PANIC_EXTRA_ORIGINS, e.g. the landing page) read
+            the answer, with the unlock cookie. Never '*'."""
+            if not origin or origin == app.a.origin.rstrip("/") or origin not in app.origins:
+                return {}
+            return {"Access-Control-Allow-Origin": origin, "Access-Control-Allow-Credentials": "true",
+                    "Vary": "Origin"}
+
+        def do_OPTIONS(self):
+            origin = self.headers.get("Origin", "")
+            cors = self.cors_headers(origin)
+            if not cors or self.path.split("?", 1)[0] != "/api/scan":
+                return self.send(403, b"", "text/plain")
+            self.send(204, b"", "text/plain", {**cors, "Access-Control-Allow-Methods": "POST",
+                                               "Access-Control-Allow-Headers": "Content-Type",
+                                               "Access-Control-Max-Age": "86400"})
 
     return Handler
 
