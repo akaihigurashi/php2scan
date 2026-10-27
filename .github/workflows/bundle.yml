@@ -1,0 +1,19 @@
+# Checks that php2scan.py and web.py are up to date with check.py and panic-core.
+# If this fails: rebuild with  python3 ../panic-core/bundle.py check.py  and commit.
+name: bundle
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: akaihigurashi/panic-core
+          path: .panic-core
+      - run: python3 .panic-core/bundle.py check.py --check

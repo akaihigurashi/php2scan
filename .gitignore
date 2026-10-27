@@ -3,4 +3,5 @@ __pycache__/
 state/
 audit/
 evidence/
+.panic-core/
 .DS_Store

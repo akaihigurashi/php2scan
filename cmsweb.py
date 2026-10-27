@@ -25,6 +25,7 @@ import argparse
 import bisect
 import collections
 import concurrent.futures as cf
+import hashlib
 import ipaddress
 import json
 import os
@@ -41,7 +42,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import cmsscan  # noqa: E402  (detection engine, used unchanged)
 
-CONSENT_VERSION = "2026-10-26.3"   # bump whenever the consent / rules text on the page changes
+CONSENT_VERSION = "2026-10-26.4"   # bump whenever the consent / rules text on the page changes
 
 # --- limits ---------------------------------------------------------------
 CLIENT_LIMITS = [(5, 3600)]                         # per visitor: 5 checks per hour
@@ -538,6 +539,11 @@ class App:
                 self.static["/" + name] = (f.read(), ctype)
         page, ctype = self.static["/index.html"]
         page = page.replace(b"<!--OPERATOR-->", self.operator_html().encode("utf-8"))
+        # cache busting: reference CSS/JS with a hash of their content, so a new version
+        # always gets a new URL and browsers never mix old and new files
+        for name in ("style.css", "app.js"):
+            ver = hashlib.sha256(self.static["/" + name][0]).hexdigest()[:10]
+            page = page.replace(f'"/{name}"'.encode(), f'"/{name}?v={ver}"'.encode())
         self.static["/index.html"] = self.static["/"] = (page, ctype)
 
     def operator_html(self):
@@ -545,9 +551,7 @@ class App:
         esc = lambda s: (s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
                          .replace('"', "&quot;"))
         name, mail, url = self.a.operator.strip(), self.a.contact.strip(), self.a.imprint_url.strip()
-        if not (name or mail or url):
-            log("WARNING: no operator/contact set (CMSWEB_OPERATOR, CMSWEB_CONTACT) - "
-                "the page shows no responsible person")
+        if not (name or mail or url):          # optional: nothing set -> no section
             return ""
         parts = []
         if name:
@@ -727,7 +731,13 @@ def make_handler(app):
                 return self.send(200, b"ok\n", "text/plain")
             if path in app.static:
                 body, ctype = app.static[path]
-                return self.send(200, body, ctype, cache="public, max-age=300")
+                if path in ("/", "/index.html"):
+                    cache = "no-cache"                                 # always revalidate the page
+                elif "v=" in self.path:
+                    cache = "public, max-age=31536000, immutable"      # versioned asset URL
+                else:
+                    cache = "public, max-age=300"
+                return self.send(200, body, ctype, cache=cache)
             self.send(404, b"Not found\n", "text/plain")
 
         do_HEAD = do_GET

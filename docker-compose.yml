@@ -7,16 +7,16 @@ services:
 
     environment:
       # Your public address - the API only accepts requests from this origin.
-      CMSWEB_ORIGIN: "https://scan.example.ch"
+      PANIC_ORIGIN: "https://php2scan.example.ch"
       # Optional: a contact section at the bottom of the page
-      # CMSWEB_OPERATOR: "Your Name"
-      # CMSWEB_CONTACT: "abuse@example.ch"
-      # CMSWEB_IMPRINT_URL: "https://www.example.ch/imprint"
+      # PANIC_OPERATOR: "Your Name"
+      # PANIC_CONTACT: "abuse@example.ch"
+      # PANIC_IMPRINT_URL: "https://www.example.ch/imprint"
       # nginx on the host reaches the container via this network's gateway:
-      CMSWEB_TRUSTED_PROXY: "172.30.250.1"
+      PANIC_TRUSTED_PROXY: "172.30.250.1"
       # Never check these domains / IPs (comma-separated), e.g. your own servers:
-      # CMSWEB_DENY_HOSTS: "example.ch,intranet.example.ch"
-      # CMSWEB_DENY_IPS: "203.0.113.10"   (your own server is excluded automatically)
+      # PANIC_DENY_HOSTS: "example.ch,intranet.example.ch"
+      # PANIC_DENY_IPS: "203.0.113.10"   (your own server is excluded automatically)
 
     # only reachable from the host itself - nginx does TLS and forwards to it
     ports:

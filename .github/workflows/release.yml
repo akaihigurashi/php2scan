@@ -1,0 +1,27 @@
+# On a version tag (v1.2.3): publish a GitHub release with the single-file scanner
+# attached, so it can be downloaded directly:
+#   curl -LO https://github.com/akaihigurashi/php2scan/releases/latest/download/php2scan.py
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the scanner runs
+        run: |
+          python3 php2scan.py --version
+          python3 -c "import ast,sys; ast.parse(open('php2scan.py').read())"
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" php2scan.py --title "php2scan $GITHUB_REF_NAME" --generate-notes
