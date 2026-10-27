@@ -56,7 +56,7 @@ Verdict column:
 from engine import *  # noqa: F401,F403  # bundle: strip
 
 NAME = "php2scan"
-VERSION = "2.0.0"
+VERSION = "2.1.0"
 DESCRIPTION = "PHP/CMS detection with integrated TCP port scan (PHP2Shell, CVE-2026-109618/-109619)."
 TARGETS = {"PHP"}                # database: PHP and every technology that runs on PHP
 BUILTIN_LABEL = "PHP apps"
@@ -276,6 +276,36 @@ def count_key(v):
     return "PHP" if v.startswith("PHP") else v
 
 
+def verdict_style(row):
+    """(rank, colour, status, reason) for the result list: what the verdict means for PHP2Shell."""
+    v, version = row[3], row[4]
+    if not v.startswith("PHP"):
+        return 50, "plain", "NO PHP FOUND", ""
+    if not version:
+        return 20, "yellow", "UNKNOWN", "PHP, but the version is hidden"
+    if version in DISTRO_VERSIONS:
+        return 20, "yellow", "UNKNOWN", f"PHP {version} distro build: check the package"
+    branch = ".".join(version.split(".")[:2])
+    fixed = PHP_FIXED.get(branch)
+    if not fixed:
+        return 10, "red", "VULNERABLE", f"PHP {branch} is end of life"
+    if version_ge(version, fixed):
+        return 40, "green", "PATCHED", f"PHP {version} (fixed in {fixed})"
+    return 10, "red", "VULNERABLE", f"PHP {version} < {fixed}"
+
+
+EXAMPLES = """examples:
+  php2scan.py 203.0.113.10                       20 web ports + every vhost on the IP
+  php2scan.py 198.51.100.0/24                    a whole IP range
+  php2scan.py shop.example.ch@203.0.113.10       one known vhost on a specific IP
+  php2scan.py 203.0.113.0/24 --names domains.txt + hostnames from your own data
+  php2scan.py 203.0.113.10 -p all -o out.csv     all 65535 ports, results also as CSV
+
+status: VULNERABLE (PHP version without the fix) - PATCHED - UNKNOWN (PHP, but the
+version is hidden or a distro build: check on the server) - NO PHP FOUND
+"""
+
+
 # ---------------------------------------------------------------------------
 # web page (web.py): assessment shown to visitors
 # ---------------------------------------------------------------------------
@@ -346,6 +376,12 @@ def web_result(host, ip, row, info, friendly_evidence):
         result["error"] = "The server refused the HTTPS connection for this hostname."
     if result["php"]:
         result["php_check"] = php_assessment(version)
+        branch = ".".join(version.split(".")[:2]) if version else ""
+        result["fixed"] = [{"software": f"PHP {b}", "versions": v, "note": "", "found": b == branch}
+                           for b, v in PHP_FIXED.items()]
+        result["fixed"].append({"software": f"Older than PHP {min(PHP_FIXED)}", "versions": "",
+                                "note": "end of life: no official fix, upgrade",
+                                "found": bool(branch) and branch not in PHP_FIXED})
     if version:
         result["recommendations"].append(
             "The site reveals its exact PHP version (X-Powered-By header). Set "

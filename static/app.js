@@ -1,6 +1,6 @@
 "use strict";
 
-// Everything that comes from the checked website (server header, app names, URLs) is
+// Everything that comes from the checked website (server header, technology names, URLs) is
 // inserted with textContent only - never as HTML - so a site can't inject markup here.
 
 (function () {
@@ -9,6 +9,7 @@
   const consent = document.getElementById("consent");
   const button = document.getElementById("go");
   const result = document.getElementById("result");
+  const SVG = "http://www.w3.org/2000/svg";
 
   function el(tag, attrs, children) {
     const node = document.createElement(tag);
@@ -18,6 +19,31 @@
     }
     for (const c of children || []) if (c) node.append(c);
     return node;
+  }
+
+  function icon(level) {
+    const svg = document.createElementNS(SVG, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("width", "26");
+    svg.setAttribute("height", "26");
+    svg.setAttribute("aria-hidden", "true");
+    const paths = {
+      warn: ["M12 3 2 21h20L12 3Z", "M12 10v5M12 18v.01"],
+      bad: ["M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Z", "M12 7v6M12 16.5v.01"],
+      good: ["M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Z", "m7.5 12.5 3 3 6-6.5"],
+      unknown: ["M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Z", "M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6v.6M12 17v.01"],
+    }[level] || [];
+    for (const d of paths) {
+      const p = document.createElementNS(SVG, "path");
+      p.setAttribute("d", d);
+      p.setAttribute("fill", "none");
+      p.setAttribute("stroke", "currentColor");
+      p.setAttribute("stroke-width", "2");
+      p.setAttribute("stroke-linecap", "round");
+      p.setAttribute("stroke-linejoin", "round");
+      svg.append(p);
+    }
+    return svg;
   }
 
   function showFormError(message) {
@@ -38,32 +64,34 @@
   }
 
   function verdictLine(r) {
-    const h1 = el("p", { class: "verdict" });
+    const h = el("h2", { class: "verdict", id: "result-h" });
     const host = el("span", { class: "host", text: r.host });
     if (!r.reachable) {
-      h1.append("We couldn't reach ", host, ".");
-      return h1;
+      h.append("We couldn't reach ", host, ".");
+      return h;
     }
     if (!r.php) {
-      h1.append(host, " shows no signs of PHP.");
-      return h1;
+      h.append(host, " shows no signs of PHP.");
+      return h;
     }
     let text = " runs PHP";
     if (r.php_version) text += " " + r.php_version;
     if (r.apps && r.apps.length) text += " with " + joinList(r.apps);
-    h1.append(host, text + ".");
-    return h1;
+    h.append(host, text + ".");
+    return h;
   }
 
-  const STATUS_TITLE = {
-    good: "Patched against PHP2Shell",
-    bad: "Likely vulnerable to PHP2Shell",
-    unknown: "PHP2Shell patch status not visible from outside",
+  // same words as the command-line scanner
+  const STATUS = {
+    bad: ["bad", "Vulnerable"],
+    good: ["good", "Patched"],
+    unknown: ["warn", "Patch status not visible"],
   };
 
   function render(r) {
     result.replaceChildren();
-    result.append(verdictLine(r));
+    result.setAttribute("aria-labelledby", "result-h");
+    result.append(el("p", { class: "kicker", text: "Here's what we found" }), verdictLine(r));
 
     if (!r.reachable) {
       result.append(el("p", { text: r.error || "The website did not answer." }));
@@ -71,15 +99,44 @@
       return;
     }
 
+    let level, title, text;
     if (r.php && r.php_check) {
-      const s = r.php_check.status in STATUS_TITLE ? r.php_check.status : "unknown";
-      result.append(el("div", { class: "status " + s }, [
-        el("strong", { text: STATUS_TITLE[s] }),
-        el("p", { text: r.php_check.text }),
+      [level, title] = STATUS[r.php_check.status] || STATUS.unknown;
+      text = r.php_check.text;
+    } else {
+      [level, title] = ["good", "No PHP found"];
+      text = "Nothing on the start page points to PHP. It may still use PHP and simply not " +
+        "reveal it, which is good practice.";
+    }
+    result.append(el("div", { class: "status " + level }, [
+      icon(level),
+      el("div", {}, [el("strong", { text: title }), el("p", { text: text })]),
+    ]));
+
+    if (r.php && r.fixed && r.fixed.length) {
+      const rows = r.fixed.map((f) => {
+        const name = el("td", { text: f.software });
+        if (f.found) name.append(" ", el("span", { class: "found-tag", text: "(found on this site)" }));
+        const ver = el("td", {}, [f.versions ? el("span", { class: "code", text: f.versions }) : null]);
+        if (f.note) ver.append(f.versions ? el("br") : "", el("span", { class: "fix-note", text: f.note }));
+        return el("tr", f.found ? { class: "found" } : {}, [name, ver]);
+      });
+      result.append(el("h3", { text: "Fixed versions" }), el("div", { class: "table-wrap" }, [
+        el("table", {}, [
+          el("thead", {}, [el("tr", {}, [el("th", { text: "PHP branch" }), el("th", { text: "Safe from version" })])]),
+          el("tbody", {}, rows),
+        ]),
       ]));
-    } else if (!r.php) {
-      result.append(el("p", { text: "Nothing on the start page points to PHP. It may still use PHP " +
-        "and simply not reveal it, which is good practice." }));
+    }
+
+    if (r.evidence && r.evidence.length) {
+      result.append(el("h3", { text: "What gave it away" }),
+        el("ul", { class: "plain" }, r.evidence.map((e) => el("li", { text: e }))));
+    }
+
+    if (r.recommendations && r.recommendations.length) {
+      result.append(el("h3", { text: "Good to know" }),
+        el("div", { class: "notes" }, r.recommendations.map((n) => el("p", { text: n }))));
     }
 
     const facts = el("dl", { class: "facts" });
@@ -91,16 +148,7 @@
     add("Server software", r.server);
     add("IP address", r.ip, "code");
     add("HTTP status", r.http_status);
-    result.append(el("h2", { text: "Details" }), facts);
-
-    if (r.evidence && r.evidence.length) {
-      result.append(el("h2", { text: "What gave it away" }),
-        el("ul", { class: "plain" }, r.evidence.map((e) => el("li", { text: e }))));
-    }
-    if (r.recommendations && r.recommendations.length) {
-      result.append(el("h2", { text: "Recommendations" }),
-        el("ul", { class: "plain" }, r.recommendations.map((e) => el("li", { text: e }))));
-    }
+    result.append(el("h3", { text: "Details" }), facts);
 
     let meta = "Checked " + (r.checked_at || "just now");
     if (r.cached) meta += " (saved result)";

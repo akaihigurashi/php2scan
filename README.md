@@ -1,7 +1,7 @@
 <h1>
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/logo-dark.png">
-    <img alt="php2scan" src="docs/logo-light.png" width="334">
+    <img alt="php2scan" src="docs/logo-light.png" width="331">
   </picture>
 </h1>
 
@@ -26,7 +26,7 @@ loads the site's start page like a browser would and reports:
 - whether the visible PHP version includes the PHP2Shell fix
 - what gave it away, and how to stop revealing it
 
-![Result for a site running PHP 8.3.35 with Nextcloud](docs/screenshot.png)
+![Result for a site running PHP 8.3.12 with WordPress](docs/screenshot.png)
 
 ## Run it with Docker
 
@@ -119,8 +119,52 @@ python3 php2scan.py 203.0.113.10 -p all -o out.csv       # all 65535 ports, CSV 
 python3 php2scan.py -h                                   # all options
 ```
 
+| Status | Meaning |
+|---|---|
+| `VULNERABLE` | The visible PHP version doesn't include the PHP2Shell fix (or is end of life) |
+| `UNKNOWN` | PHP, but the version is hidden or a distribution build: check on the server |
+| `PATCHED` | The visible PHP version includes the fix |
+| `NO PHP FOUND` | Nothing PHP-specific visible |
+
+Results are listed worst first, with a short reason. Hidden results (closed ports,
+errors, vhosts that only show the default site) appear with `-a`, the evidence with `-v`.
+
+| Option | What it does |
+|---|---|
+| `-p LIST` | Ports: `web` (20 common ports, default), `all`, or `80,443,8000-8100` |
+| `-n` | No port scan, only 443 and 80 |
+| `--names FILE` | Your own hostname list, checked as vhosts |
+| `--no-vhosts` | Don't look for other websites on the same IP |
+| `-a` / `-v` | Show hidden results / show the evidence |
+| `-o FILE` | Also write all results to CSV |
+| `-d` | Debug: every request, header and match |
+| `-q` | No banner (for scripts) |
+| `-V` | Print the version |
+| `-h` | All options |
+
 Only scan systems you are authorized to test. (php2scan.py was called cmsscan.py
-before; it works the same.)
+before; it finds the same things, the output is now sorted by status.)
+
+### API keys for more passive DNS sources
+
+AlienVault OTX and HackerTarget work without keys. VirusTotal, Shodan and
+SecurityTrails need an API key, read from environment variables:
+
+| Variable | Source |
+|---|---|
+| `PANIC_VT_KEY` | VirusTotal passive DNS |
+| `PANIC_SHODAN_KEY` | Shodan hostnames |
+| `PANIC_SECURITYTRAILS_KEY` | SecurityTrails reverse IP |
+
+Keep them in a `.env` file only you can read, and load it just for the scan:
+
+```bash
+( set -a; . ./.env; set +a; python3 php2scan.py 203.0.113.10 )
+```
+
+`--vt-key`, `--shodan-key` and `--securitytrails-key` also work, but command-line
+arguments are visible to other local users (`ps`) and end up in your shell history.
+Key values are masked in error messages. (Thanks to Jonas Hüsser for this.)
 
 ## How it's built
 

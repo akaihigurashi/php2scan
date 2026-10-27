@@ -6,13 +6,14 @@
 <title>php2scan</title>
 <meta name="description" content="Check whether your website's PHP version is affected by PHP2Shell (CVE-2026-109618 / CVE-2026-109619), and which PHP version and applications it reveals.">
 <meta name="robots" content="index, nofollow">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/style.css">
 <script src="/app.js" defer></script>
 </head>
 <body>
 <main>
   <nav class="topbar" aria-label="Site">
-    <a class="wordmark" href="/" aria-label="php2scan home"><span class="wm-php">php</span><span class="wm-2">2</span><span class="wm-scan">scan</span></a>
+    <a class="back" href="https://shouldipanic.ch">← shouldipanic.ch</a>
     <a class="gh" href="https://github.com/akaihigurashi/php2scan" rel="noopener">
       <svg viewBox="0 0 16 16" width="20" height="20" aria-hidden="true" focusable="false"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
       <span>Source on GitHub</span>
@@ -20,13 +21,17 @@
   </nav>
 
   <header class="intro">
-    <h1>Is your website affected by&nbsp;PHP2Shell?</h1>
+    <div class="brand">
+      <span class="php-badge" aria-hidden="true">&lt;?php</span>
+      <a class="wordmark" href="/" aria-label="php2scan home"><span>php</span><span class="wm-2">2</span><span class="wm-scan">scan</span></a>
+    </div>
+    <h1>Is your website affected by PHP2Shell?</h1>
     <p class="lede">PHP2Shell
       (<a href="https://nvd.nist.gov/vuln/detail/CVE-2026-109618" rel="noopener">CVE-2026-109618</a>
       and <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-109619" rel="noopener">CVE-2026-109619</a>)
-      is a critical vulnerability in PHP that lets attackers run code on a web server. Enter your
-      website's address to see which PHP version and applications it reveals, and whether that
-      version is patched.</p>
+      is a critical vulnerability in PHP that lets attackers run code on a web server. It affects
+      WordPress, Joomla, Nextcloud and every other PHP site. Enter your website to see which PHP
+      version and applications it reveals, and whether that version is patched.</p>
   </header>
 
   <form id="check" novalidate>
@@ -40,16 +45,31 @@
       <input type="checkbox" id="consent" required>
       <span>I own this website or have the owner's permission to have it checked.</span>
     </label>
-    <p class="fineprint">The check loads your start page the same way a browser does.</p>
-    <p class="warning">Abuse may be reported to the authorities.</p>
+    <p class="fineprint">The check loads your start page the same way a browser does.
+      Abuse may be reported to the authorities.</p>
   </form>
 
   <section id="result" aria-live="polite" tabindex="-1" hidden></section>
 
+  <section class="yourself" aria-labelledby="self-h">
+    <div>
+      <h2 id="self-h">Need more? Run it yourself.</h2>
+      <p>This page checks one website at a time. The free command-line version does a lot more:
+        whole IP ranges, a port scan, every website hosted on the same server, CSV export,
+        and no limits. One Python file, nothing to install.</p>
+    </div>
+    <pre><span class="c"># download one file, run it</span>
+curl -LO https://github.com/akaihigurashi/php2scan/releases/latest/download/php2scan.py
+python3 php2scan.py 203.0.113.0/24
+
+<span class="c"># only scan systems you're allowed to test</span></pre>
+  </section>
+
   <footer>
     <h2>How it works</h2>
     <p>We load the start page of your website and compare what it sends back with known
-      fingerprints of PHP applications.</p>
+      fingerprints of PHP and about 430 PHP applications. If the site reveals its PHP version,
+      we tell you whether it includes the PHP2Shell fix.</p>
     <h2>Rules of use</h2>
     <p>Only check websites you own or have permission to check. Abuse may be reported to
       the authorities.</p>
@@ -59,8 +79,8 @@
       unless they are needed to report or investigate a specific case of misuse.
       No cookies, no tracking, no third-party content.</p>
 <!--OPERATOR-->
-    <p>php2scan is part of <a href="https://shouldipanic.ch">shouldipanic.ch</a>, open-source
-      checks for current web vulnerabilities.</p>
+    <p class="family">php2scan is part of <a href="https://shouldipanic.ch">shouldipanic.ch</a>,
+      open-source checks for current web vulnerabilities.</p>
   </footer>
 </main>
 </body>
