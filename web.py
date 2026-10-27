@@ -25,7 +25,8 @@ Access keys (optional, PANIC_ACCESS_KEYS + PANIC_TRUST_SECRET): people with a ke
 once at /unlock (or with a magic link /unlock#k=KEY - the part after # never reaches a
 server) and get a signed HttpOnly cookie for 30 days. For them the rate limit, the result
 cache, the VPN/datacenter/country checks on their own address and the never-check lists
-(well-known sites, top sites, government, sanctioned countries) are lifted. Internal /
+(well-known sites, top sites, government, sanctioned countries) are lifted, and they can
+check a single public IP address instead of a hostname. Internal /
 private addresses, PANIC_DENY_HOSTS / PANIC_DENY_IPS and this server stay blocked, and
 every check is logged with their name. Only the SHA-256 hash of a key is configured.
     python3 web.py --make-key akai      # new key + the line for .env
@@ -495,13 +496,20 @@ class TargetError(Exception):
     pass
 
 
-def normalize_host(raw):
-    """Accept 'example.ch', 'https://example.ch/path' -> 'example.ch'. Hostnames only."""
+def normalize_host(raw, allow_ip=False):
+    """Accept 'example.ch', 'https://example.ch/path' -> 'example.ch'. Hostnames only;
+    allow_ip (access key): a single public IP address too, e.g. 203.0.113.10 or [2001:db8::1]."""
     s = (raw or "").strip().lower()
     if len(s) > 300:
         raise TargetError("Input too long.")
     s = re.sub(r"^[a-z][a-z0-9+.-]*://", "", s)            # drop scheme
     s = re.split(r"[/?#]", s, maxsplit=1)[0]                # drop path/query
+    if allow_ip:
+        bare = s[1:-1] if s.startswith("[") and s.endswith("]") else s
+        try:
+            return str(ipaddress.ip_address(bare))
+        except ValueError:
+            pass
     if "@" in s:
         raise TargetError("Please enter a plain hostname.")
     if ":" in s or s.startswith("["):
@@ -572,7 +580,8 @@ def resolve_target(host, allow_private, deny_ips, deny_hosts, geo, top=None, tru
         refuse("no-dns", "The hostname does not resolve.")
     for ip in ips:                                          # ALL addresses are checked
         if not allow_private and not is_public(ip):
-            refuse("non-public", "This hostname points to a non-public address and cannot be checked.")
+            refuse("non-public", "This is a non-public address and cannot be checked." if engine.is_ip(host)
+                   else "This hostname points to a non-public address and cannot be checked.")
         if ip in deny_ips:
             refuse("deny-ip")
         if trusted:
@@ -611,7 +620,7 @@ def friendly_evidence(evidence):
 
 def scan_one(host, ip, port, options):
     addr = ip if ":" not in ip else f"[{ip}]"
-    vt = f"{host}@{addr}" + (f":{port}" if port else "")
+    vt = (addr if engine.is_ip(host) else f"{host}@{addr}") + (f":{port}" if port else "")
     try:
         row = engine.check(vt, HTTP_TIMEOUT, options)
         info = engine.INFO.get(vt)
@@ -791,14 +800,8 @@ class App:
                    "Please use your regular internet connection.")
             return 403, {"error": msg}, {}
 
-        ok, retry = (True, 0) if trusted else \
-            self.limiter.check("c:" + self.client_key(client_ip), CLIENT_LIMITS)
-        if not ok:
-            return 429, {"error": f"Too many checks. Please try again in {fmt_wait(retry)}."}, \
-                {"Retry-After": str(retry)}
-
         try:
-            host = normalize_host(data.get("host"))
+            host = normalize_host(data.get("host"), allow_ip=bool(trusted))
         except TargetError as e:
             return 400, {"error": str(e)}, {}
         options = engine.web_options(data)                  # e.g. {"probe": True}, validated
@@ -824,6 +827,14 @@ class App:
         if not self.sem.acquire(blocking=False):
             return 503, {"error": "The service is busy right now. Please try again in a minute."}, \
                 {"Retry-After": "60"}
+        # Rule: no request to the website, no rate used. Cached answers, refused or invalid
+        # targets and "busy" cost nothing; only a check that really runs is counted.
+        ok, retry = (True, 0) if trusted else \
+            self.limiter.check("c:" + self.client_key(client_ip), CLIENT_LIMITS)
+        if not ok:
+            self.sem.release()
+            return 429, {"error": f"Too many checks. Please try again in {fmt_wait(retry)}."}, \
+                {"Retry-After": str(retry)}
         try:
             fut = self.pool.submit(scan, host, ip, options)
             try:
@@ -871,7 +882,7 @@ UNLOCK_HTML = r"""<!DOCTYPE html>
   <p class="brand"><a href="https://shouldipanic.ch">shouldipanic<span class="q">?</span></a></p>
   <h1>Unlock</h1>
   <p class="lede">For people with an access key. Unlocked, there's no rate limit and no saved
-    results, and well-known or foreign websites can be checked too. Internal addresses stay
+    results, well-known or foreign websites can be checked too, and so can public IP addresses. Internal addresses stay
     blocked, and every check is logged under your name.</p>
 
   <form id="unlock" novalidate>

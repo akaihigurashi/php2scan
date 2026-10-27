@@ -194,3 +194,28 @@ footer .family { margin-top: 28px; }
   .facts { grid-template-columns: 1fr; gap: 2px; }
   .facts dd { margin-bottom: 8px; }
 }
+
+/* buy me a coffee (top bar): steam on hover, a sip on click */
+:root { --coffee-bg: var(--crust); --coffee-hover: var(--crust-dark); --coffee-ink: var(--card); }
+.nav-links { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.btn-coffee {
+  display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 16px; border-radius: 8px;
+  background: var(--coffee-bg); color: var(--coffee-ink); font-weight: 600; font-size: 15px; text-decoration: none;
+  transition: transform .15s ease, box-shadow .2s ease, background-color .2s ease;
+}
+.btn-coffee:hover { background: var(--coffee-hover); color: var(--coffee-ink); transform: translateY(-2px); box-shadow: 0 10px 20px -10px rgba(0, 0, 0, .55); }
+.btn-coffee:active { transform: translateY(1px) scale(.96); box-shadow: none; transition-duration: .05s; }
+.btn-coffee svg { overflow: visible; flex: none; }
+.btn-coffee .steam { transform-box: fill-box; transform-origin: center bottom; }
+.btn-coffee:hover .steam { animation: steam 1s ease-in-out infinite alternate; }
+.btn-coffee:active svg { animation: sip .35s ease-out; }
+@keyframes steam { from { transform: translateY(0); opacity: 1; } to { transform: translateY(-3px); opacity: .25; } }
+@keyframes sip { 0% { transform: rotate(0); } 50% { transform: rotate(-18deg); } 100% { transform: rotate(0); } }
+@media (prefers-reduced-motion: reduce) {
+  .btn-coffee, .btn-coffee:hover, .btn-coffee:active { transform: none; }
+  .btn-coffee .steam, .btn-coffee svg { animation: none !important; }
+}
+@media (max-width: 560px) {
+  .btn-coffee span { display: none; }
+  .btn-coffee { padding: 0 12px; }
+}
