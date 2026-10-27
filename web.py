@@ -20,6 +20,15 @@ Abuse protection:
   * hard-coded list of websites that are never checked, and never this server
   * same-origin check on the API (no driving scans from other websites)
 
+Access keys (optional, PANIC_ACCESS_KEYS + PANIC_TRUST_SECRET): people with a key unlock
+once at /unlock (or with a magic link /unlock#k=KEY - the part after # never reaches a
+server) and get a signed HttpOnly cookie for 30 days. For them the rate limit, the result
+cache, the VPN/datacenter/country checks on their own address and the never-check lists
+(well-known sites, top sites, government, sanctioned countries) are lifted. Internal /
+private addresses, PANIC_DENY_HOSTS / PANIC_DENY_IPS and this server stay blocked, and
+every check is logged with their name. Only the SHA-256 hash of a key is configured.
+    python3 web.py --make-key akai      # new key + the line for .env
+
 Standard library only. Runs behind a reverse proxy, e.g.:
     python3 web.py --origin https://scan.example.ch
 """
@@ -29,10 +38,12 @@ import importlib
 import collections
 import concurrent.futures as cf
 import hashlib
+import hmac
 import ipaddress
 import json
 import os
 import re
+import secrets
 import socket
 import sys
 import threading
@@ -55,6 +66,12 @@ MAX_CONCURRENT = 3                                  # scans running at the same 
 CACHE_TTL = 3600                                    # same hostname -> cached result for an hour
 SCAN_TIMEOUT = 45                                   # hard cap per scan (seconds)
 HTTP_TIMEOUT = 6                                    # per request inside a scan
+
+# --- access keys ----------------------------------------------------------------
+TRUST_COOKIE = "panic_trust"
+TRUST_DAYS = 30                                     # an unlock lasts this long per browser
+UNLOCK_LIMITS = [(5, 900), (20, 86400)]             # unlock attempts per visitor
+KEY_NAME_RX = re.compile(r"^[a-z0-9_-]{1,32}$")
 
 # --- blocklists for CLIENT addresses (who is asking) -------------------------
 BLOCKLISTS = {
@@ -401,6 +418,75 @@ class Limiter:
         return True, 0
 
 
+class Trust:
+    """Access keys: name -> SHA-256 of the key (the key itself is never stored), and the
+    signed cookie that marks an unlocked browser. The signature covers the key's hash, so
+    removing or replacing a key in ACCESS_KEYS revokes every cookie made with it."""
+
+    def __init__(self, keys_spec, secret, domain):
+        self.keys = {}
+        for item in (keys_spec or "").split(","):
+            name, _, digest = item.strip().partition(":")
+            name, digest = name.strip().lower(), digest.strip().lower()
+            if not name and not digest:
+                continue
+            if not KEY_NAME_RX.match(name) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+                log(f"ignoring invalid ACCESS_KEYS entry {name[:32]!r} (expected name:sha256-hex)")
+                continue
+            self.keys[name] = digest
+        self.secret = (secret or "").encode()
+        self.domain = (domain or "").strip().lstrip(".")
+        self.enabled = bool(self.keys) and len(self.secret) >= 32
+        if self.keys and not self.enabled:
+            log("WARNING: ACCESS_KEYS is set but TRUST_SECRET is missing or shorter than 32 "
+                "characters - access keys are disabled")
+
+    def match(self, key):
+        """Name of the key, or None. Compares hashes in constant time."""
+        if not self.enabled or not isinstance(key, str) or not 16 <= len(key.strip()) <= 200:
+            return None
+        digest = hashlib.sha256(key.strip().encode()).hexdigest()
+        found = None
+        for name, kd in self.keys.items():
+            if hmac.compare_digest(digest, kd):
+                found = name
+        return found
+
+    def _sig(self, name, exp):
+        msg = f"{name}|{exp}|{self.keys[name]}".encode()
+        return hmac.new(self.secret, msg, hashlib.sha256).hexdigest()[:40]
+
+    def _header(self, value, max_age):
+        parts = [f"{TRUST_COOKIE}={value}", "Path=/", f"Max-Age={max_age}", "Secure", "HttpOnly",
+                 "SameSite=Lax"]
+        if self.domain:
+            parts.insert(1, f"Domain={self.domain}")
+        return "; ".join(parts)
+
+    def issue(self, name):
+        exp = int(time.time()) + TRUST_DAYS * 86400
+        return self._header(f"{name}.{exp}.{self._sig(name, exp)}", TRUST_DAYS * 86400), exp
+
+    def clear(self):
+        return self._header("", 0)
+
+    def who(self, cookie_header):
+        """(name, expiry) for a valid cookie, else (None, 0)."""
+        if not self.enabled or not cookie_header:
+            return None, 0
+        for part in cookie_header.split(";"):
+            k, _, v = part.strip().partition("=")
+            if k != TRUST_COOKIE:
+                continue
+            bits = v.strip().strip('"').split(".")
+            if len(bits) != 3 or bits[0] not in self.keys or not bits[1].isdigit():
+                continue
+            name, exp, sig = bits[0], int(bits[1]), bits[2]
+            if exp > time.time() and hmac.compare_digest(sig, self._sig(name, exp)):
+                return name, exp
+        return None, 0
+
+
 # ---------------------------------------------------------------------------
 # target validation (SSRF protection)
 # ---------------------------------------------------------------------------
@@ -460,17 +546,19 @@ def never_check(host):
     return ""
 
 
-def resolve_target(host, allow_private, deny_ips, deny_hosts, geo, top=None):
-    """Returns (ip, '') or raises TargetError(user message) with .reason for the audit log."""
+def resolve_target(host, allow_private, deny_ips, deny_hosts, geo, top=None, trusted=False):
+    """Returns (ip, '') or raises TargetError(user message) with .reason for the audit log.
+    trusted (access key): the never-check lists and the country check are skipped; private
+    addresses and the operator's own deny lists are always enforced."""
     def refuse(reason, msg=NOT_ALLOWED):
         e = TargetError(msg)
         e.reason = reason
         raise e
 
-    why = never_check(host)
+    why = "" if trusted else never_check(host)
     if why:
         refuse(why)
-    if top is not None and top.contains(host):
+    if not trusted and top is not None and top.contains(host):
         refuse("top-site")
     if any(host == d or host.endswith("." + d) for d in deny_hosts):
         refuse("deny-host")
@@ -486,6 +574,8 @@ def resolve_target(host, allow_private, deny_ips, deny_hosts, geo, top=None):
             refuse("non-public", "This hostname points to a non-public address and cannot be checked.")
         if ip in deny_ips:
             refuse("deny-ip")
+        if trusted:
+            continue
         in_country = geo.blocked(ip)
         if in_country is None:
             refuse("geo-unavailable", "The service is temporarily unavailable. Please try again later.")
@@ -499,7 +589,8 @@ def resolve_target(host, allow_private, deny_ips, deny_hosts, geo, top=None):
 # ---------------------------------------------------------------------------
 WHERE = {"header": "HTTP header", "cookie": "cookie", "body": "page content",
          "db-header": "HTTP header", "db-cookie": "cookie", "db-meta": "meta tag",
-         "db-html": "page content", "db-script": "script path", "db-url": "URL"}
+         "db-html": "page content", "db-script": "script path", "db-url": "URL",
+         "version-url": "version information page"}
 WHERE.update(getattr(engine, "WHERE", {}))
 
 
@@ -517,8 +608,9 @@ def friendly_evidence(evidence):
     return out
 
 
-def scan(host, ip, options):
-    vt = f"{host}@{ip}" if ":" not in ip else f"{host}@[{ip}]"
+def scan_one(host, ip, port, options):
+    addr = ip if ":" not in ip else f"[{ip}]"
+    vt = f"{host}@{addr}" + (f":{port}" if port else "")
     try:
         row = engine.check(vt, HTTP_TIMEOUT, options)
         info = engine.INFO.get(vt)
@@ -526,7 +618,24 @@ def scan(host, ip, options):
         engine.RESULT_META.pop(vt, None)                    # long-running: don't grow memory
         engine.SNI_ONLY.discard(vt)
         engine.INFO.pop(vt, None)
-    return engine.web_result(host, ip, row, info, friendly_evidence)
+    return row, info
+
+
+def scan(host, ip, options):
+    """The website itself (443, then 80), plus the product's own port if the check names one
+    (WEB_EXTRA_PORTS, e.g. Plex 32400) and it is open. The most serious answer wins."""
+    best = None
+    for port in [None] + list(getattr(engine, "WEB_EXTRA_PORTS", [])):
+        if port and not engine.port_open(ip, port, 3):
+            continue
+        row, info = scan_one(host, ip, port, options)
+        style = engine.verdict_style(row) if hasattr(engine, "verdict_style") else None
+        rank = style[0] if style else 999
+        if best is None or rank < best[0]:
+            res = engine.web_result(host, ip, row, info, friendly_evidence)
+            res["port"] = port or ""
+            best = (rank, res)
+    return best[1]
 
 
 # ---------------------------------------------------------------------------
@@ -552,6 +661,8 @@ class App:
         self.deny_ips = set(a.deny_ip)
         self.trusted = [ipaddress.ip_network(t, strict=False) for t in a.trusted_proxy]
         self.deny_hosts = {h.lower().strip(".") for h in a.deny_host}
+        self.origins = {o.rstrip("/") for o in [a.origin] + a.extra_origin if o}
+        self.trust = Trust(a.access_keys, a.trust_secret, a.cookie_domain)
         self.static = {}
         root = os.path.join(HERE, "static")
         for dirpath, _, files in os.walk(root):
@@ -570,6 +681,8 @@ class App:
             ver = hashlib.sha256(self.static["/" + name][0]).hexdigest()[:10]
             page = page.replace(f'"/{name}"'.encode(), f'"/{name}?v={ver}"'.encode())
         self.static["/index.html"] = self.static["/"] = (page, ctype)
+        for path, (text, ctype) in TRUST_STATIC.items():     # /unlock page + badge, same for all
+            self.static[path] = (text.encode("utf-8"), ctype)
 
     def operator_html(self):
         """'Contact' section from PANIC_OPERATOR / PANIC_CONTACT / PANIC_IMPRINT_URL."""
@@ -630,8 +743,31 @@ class App:
             return str(ipaddress.ip_network(f"{ip}/64", strict=False))   # one /64 = one client
         return str(a)
 
-    def handle_scan(self, client_ip, body, ua):
-        """Returns (http_status, payload dict, extra headers)."""
+    def handle_unlock(self, client_ip, body, ua):
+        if not self.trust.enabled:
+            return 404, {"error": "Access keys are not set up on this server."}, {}
+        ok, retry = self.limiter.check("u:" + self.client_key(client_ip), UNLOCK_LIMITS)
+        if not ok:
+            self.audit(client=client_ip, ua=ua[:200], outcome="unlock:rate-limited")
+            return 429, {"error": f"Too many attempts. Please try again in {fmt_wait(retry)}."}, \
+                {"Retry-After": str(retry)}
+        try:
+            data = json.loads(body or b"{}")
+        except ValueError:
+            data = {}
+        name = self.trust.match(data.get("key") if isinstance(data, dict) else None)
+        if not name:
+            self.audit(client=client_ip, ua=ua[:200], outcome="unlock:failed")   # never the key
+            time.sleep(1)
+            return 403, {"error": "This key is not valid."}, {}
+        cookie, exp = self.trust.issue(name)
+        self.audit(client=client_ip, ua=ua[:200], outcome="unlock:ok", trusted=name)
+        return 200, {"enabled": True, "trusted": name,
+                     "until": time.strftime("%Y-%m-%d", time.gmtime(exp))}, {"Set-Cookie": cookie}
+
+    def handle_scan(self, client_ip, body, ua, trusted=None):
+        """Returns (http_status, payload dict, extra headers). trusted: name of a valid
+        access key cookie - no rate limit, cache or client checks, wider target rules."""
         try:
             data = json.loads(body or b"{}")
         except ValueError:
@@ -641,11 +777,12 @@ class App:
         if data.get("consent") is not True:
             return 400, {"error": "Please confirm that you are authorized to have this website checked."}, {}
 
-        if self.geo.blocked(client_ip):          # visitors from BLOCKED_COUNTRIES
+        tr = {"trusted": trusted} if trusted else {}         # logged with every entry
+        if not trusted and self.geo.blocked(client_ip):          # visitors from BLOCKED_COUNTRIES
             self.audit(client=client_ip, target=str(data.get("host", ""))[:100], outcome="blocked:country")
             return 403, {"error": COUNTRY_BLOCKED}, {}
 
-        listed = self.blocklists.check(client_ip)
+        listed = None if trusted else self.blocklists.check(client_ip)
         if listed:
             self.audit(client=client_ip, target=str(data.get("host", ""))[:100], outcome=f"blocked:{listed}")
             msg = ("This service is temporarily unavailable." if listed == "unavailable" else
@@ -653,7 +790,8 @@ class App:
                    "Please use your regular internet connection.")
             return 403, {"error": msg}, {}
 
-        ok, retry = self.limiter.check("c:" + self.client_key(client_ip), CLIENT_LIMITS)
+        ok, retry = (True, 0) if trusted else \
+            self.limiter.check("c:" + self.client_key(client_ip), CLIENT_LIMITS)
         if not ok:
             return 429, {"error": f"Too many checks. Please try again in {fmt_wait(retry)}."}, \
                 {"Retry-After": str(retry)}
@@ -667,7 +805,7 @@ class App:
         key = host + ("|" + json.dumps(options, sort_keys=True) if options else "")
 
         with self.cache_lock:
-            hit = self.cache.get(key)
+            hit = None if trusted else self.cache.get(key)
         if hit and time.time() - hit[0] < CACHE_TTL:
             self.audit(client=client_ip, target=host, consent=CONSENT_VERSION, ua=ua[:200], outcome="cached",
                        **opt)
@@ -676,10 +814,10 @@ class App:
         try:
             ip = resolve_target(host, self.a.allow_private_targets,
                                 self.deny_ips | self.own_ips(), self.deny_hosts | self.own_domains,
-                                self.geo, self.top)
+                                self.geo, self.top, trusted=bool(trusted))
         except TargetError as e:
             self.audit(client=client_ip, target=host, consent=CONSENT_VERSION,
-                       outcome=f"rejected:{getattr(e, 'reason', e)}", **opt)
+                       outcome=f"rejected:{getattr(e, 'reason', e)}", **opt, **tr)
             return 400, {"error": str(e)}, {}
 
         if not self.sem.acquire(blocking=False):
@@ -694,12 +832,13 @@ class App:
         finally:
             self.sem.release()
         checked_at = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime())
-        with self.cache_lock:
-            self.cache[key] = (time.time(), result, checked_at)
-            for k in [k for k, v in self.cache.items() if time.time() - v[0] > CACHE_TTL]:
-                del self.cache[k]
+        if not trusted:          # a key holder may check sites the public can't: never cache those
+            with self.cache_lock:
+                self.cache[key] = (time.time(), result, checked_at)
+                for k in [k for k, v in self.cache.items() if time.time() - v[0] > CACHE_TTL]:
+                    del self.cache[k]
         self.audit(client=client_ip, target=host, ip=ip, consent=CONSENT_VERSION, ua=ua[:200],
-                   **engine.audit_fields(result), **opt)
+                   **engine.audit_fields(result), **opt, **tr)
         return 200, {**result, "cached": False, "checked_at": checked_at}, {}
 
 
@@ -714,6 +853,203 @@ def fmt_wait(s):
 STATIC_TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
                 ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png",
                 ".ico": "image/x-icon", ".woff2": "font/woff2", ".txt": "text/plain; charset=utf-8"}
+
+# /unlock page and the "Unlocked" badge: the same on every scanner (served by this file)
+UNLOCK_HTML = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Unlock - shouldipanic.ch</title>
+<link rel="stylesheet" href="/unlock.css">
+<script src="/unlock.js" defer></script>
+</head>
+<body>
+<main>
+  <p class="brand"><a href="https://shouldipanic.ch">shouldipanic<span class="q">?</span></a></p>
+  <h1>Unlock</h1>
+  <p class="lede">For people with an access key. Unlocked, there's no rate limit and no saved
+    results, and well-known or foreign websites can be checked too. Internal addresses stay
+    blocked, and every check is logged under your name.</p>
+
+  <form id="unlock" novalidate>
+    <input type="text" name="username" value="shouldipanic.ch" autocomplete="username" class="sr-only" tabindex="-1" aria-hidden="true">
+    <label for="key">Access key</label>
+    <div class="row">
+      <input id="key" name="password" type="password" autocomplete="current-password"
+             autocapitalize="off" spellcheck="false" required>
+      <button type="submit" id="go">Unlock</button>
+    </div>
+    <p id="msg" class="msg" role="status" aria-live="polite"></p>
+  </form>
+
+  <section id="done" class="done" hidden aria-live="polite">
+    <p class="ok"><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Z M7.5 12.5l3 3 6-6.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span>Unlocked as <strong id="who"></strong> until <span id="until"></span>, on every
+      shouldipanic.ch scanner in this browser.</span></p>
+    <div class="row">
+      <a class="btn" href="/">Continue</a>
+      <button type="button" id="lock" class="btn-ghost">Lock again</button>
+    </div>
+  </section>
+</main>
+</body>
+</html>
+"""
+
+UNLOCK_CSS = r""":root { --bg: #f1ece2; --card: #fbf7f0; --ink: #1d1712; --soft: #5b4c3f; --line: #dccfba;
+  --accent: #d2502a; --accent-hi: #b23f1c; --on: #fff8f0; --ok-bg: #dcebd3; --ok: #23461a; --bad: #9a2a12;
+  color-scheme: light dark; }
+@media (prefers-color-scheme: dark) { :root { --bg: #18130f; --card: #231c16; --ink: #f3e9da; --soft: #bba48c;
+  --line: #3d3025; --accent: #e0683f; --accent-hi: #f07a52; --on: #1d1712; --ok-bg: #1f3319; --ok: #c8e4b9; --bad: #f08a6e; } }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 17px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 560px; margin: 0 auto; padding: 48px 20px; }
+a { color: var(--accent); }
+:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.brand { margin: 0; }
+.brand a { color: var(--ink); text-decoration: none; font: 700 22px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: -0.04em; }
+.brand .q { display: inline-block; margin-left: 2px; padding: 0 6px 1px; border-radius: 4px; background: var(--accent); color: var(--on); transform: rotate(-8deg); }
+h1 { margin: 40px 0 0; font-size: 40px; line-height: 1.05; letter-spacing: -0.03em; }
+.lede { color: var(--soft); margin: 12px 0 0; }
+form, .done { margin-top: 32px; padding: 24px; border-radius: 14px; background: var(--card); border: 1.5px solid var(--line); }
+label { display: block; font-weight: 600; margin-bottom: 8px; }
+.row { display: flex; flex-wrap: wrap; gap: 10px; }
+#key { flex: 1 1 240px; min-width: 0; min-height: 50px; padding: 0 14px; border: 2px solid var(--line); border-radius: 8px;
+  background: var(--bg); color: var(--ink); font: 500 17px ui-monospace, SFMono-Regular, Menlo, monospace; }
+#key:focus { border-color: var(--accent); outline: none; }
+button, .btn { display: inline-flex; align-items: center; justify-content: center; min-height: 50px; padding: 0 22px; border: 0;
+  border-radius: 8px; background: var(--accent); color: var(--on); font: 600 16px system-ui, sans-serif; text-decoration: none; cursor: pointer; }
+button:hover, .btn:hover { background: var(--accent-hi); color: var(--on); }
+.btn-ghost { background: transparent; color: var(--ink); border: 1.5px solid var(--line); }
+.btn-ghost:hover { background: transparent; color: var(--ink); border-color: var(--accent); }
+.msg { margin: 12px 0 0; min-height: 1.5em; font-weight: 600; color: var(--bad); }
+.msg.info { color: var(--soft); font-weight: 400; }
+.ok { display: flex; gap: 12px; align-items: flex-start; margin: 0 0 18px; padding: 14px 16px; border-radius: 10px; background: var(--ok-bg); color: var(--ok); }
+.ok svg { flex: none; margin-top: 2px; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+"""
+
+UNLOCK_JS = r""""use strict";
+// Unlock with an access key. A magic link carries the key after "#": browsers never send
+// that part to any server, it only exists here. It is removed from the address bar at once.
+(function () {
+  const form = document.getElementById("unlock");
+  const input = document.getElementById("key");
+  const msg = document.getElementById("msg");
+  const done = document.getElementById("done");
+
+  function say(text, info) {
+    msg.textContent = text;
+    msg.className = info ? "msg info" : "msg";
+  }
+  function showDone(d) {
+    document.getElementById("who").textContent = d.trusted;
+    document.getElementById("until").textContent = d.until || "";
+    form.hidden = true;
+    done.hidden = false;
+  }
+  function showForm() {
+    done.hidden = true;
+    form.hidden = false;
+  }
+  async function unlock(key) {
+    say("Checking…", true);
+    try {
+      const res = await fetch("/api/unlock", {
+        method: "POST", credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: key }),
+      });
+      let d = {};
+      try { d = await res.json(); } catch (e) { /* not JSON */ }
+      if (!res.ok) {
+        say(d.error || "Unlock failed (error " + res.status + ").");
+        showForm();
+        input.focus();
+        return;
+      }
+      input.value = "";
+      say("");
+      showDone(d);
+    } catch (e) {
+      say("The service could not be reached. Try again later.");
+    }
+  }
+
+  function fromHash() {
+    let hash = location.hash.slice(1);
+    if (!hash) return false;
+    history.replaceState(null, "", location.pathname);
+    if (hash.startsWith("k=")) hash = hash.slice(2);
+    try { hash = decodeURIComponent(hash); } catch (e) { /* keep as is */ }
+    unlock(hash);
+    return true;
+  }
+  window.addEventListener("hashchange", fromHash);   // magic link opened on this page
+
+  if (!fromHash()) {
+    fetch("/api/whoami", { credentials: "same-origin", cache: "no-store" })
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.trusted) showDone(d);
+        else if (d.enabled === false) say("Access keys are not set up on this server.", true);
+      })
+      .catch(() => {});
+  }
+
+  form.addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    const key = input.value.trim();
+    if (!key) { say("Enter your access key."); input.focus(); return; }
+    unlock(key);
+  });
+
+  document.getElementById("lock").addEventListener("click", async () => {
+    try {
+      await fetch("/api/lock", {
+        method: "POST", credentials: "same-origin",
+        headers: { "Content-Type": "application/json" }, body: "{}",
+      });
+    } catch (e) { /* cookie stays until it expires */ }
+    showForm();
+    say("Locked. This browser is back to the normal limits.", true);
+  });
+})();
+"""
+
+TRUST_JS = r""""use strict";
+// Shows "Unlocked: name" in the top bar when this browser has a valid access-key cookie.
+(function () {
+  fetch("/api/whoami", { credentials: "same-origin", cache: "no-store" })
+    .then((r) => (r.ok ? r.json() : null))
+    .then((d) => {
+      if (!d || !d.trusted) return;
+      const bar = document.querySelector(".nav-links") || document.querySelector("nav");
+      if (!bar) return;
+      const a = document.createElement("a");
+      a.href = "/unlock";
+      a.className = "trust-badge";
+      a.title = "Access key active until " + d.until + ". Click to lock.";
+      a.textContent = "Unlocked: " + d.trusted;
+      const s = a.style;
+      s.display = "inline-flex"; s.alignItems = "center"; s.minHeight = "34px"; s.padding = "0 12px";
+      s.borderRadius = "999px"; s.border = "1.5px solid currentColor"; s.fontSize = "14px";
+      s.fontWeight = "600"; s.textDecoration = "none"; s.whiteSpace = "nowrap";
+      if (!bar.classList.contains("nav-links")) { s.marginLeft = "auto"; s.marginRight = "12px"; }
+      bar.insertBefore(a, bar.lastElementChild);
+    })
+    .catch(() => {});
+})();
+"""
+
+TRUST_STATIC = {
+    "/unlock": (UNLOCK_HTML, "text/html; charset=utf-8"),
+    "/unlock.css": (UNLOCK_CSS, "text/css; charset=utf-8"),
+    "/unlock.js": (UNLOCK_JS, "text/javascript; charset=utf-8"),
+    "/trust.js": (TRUST_JS, "text/javascript; charset=utf-8"),
+}
 
 SECURITY_HEADERS = {
     "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self'; "
@@ -763,11 +1099,16 @@ def make_handler(app):
             path = self.path.split("?", 1)[0]
             if path == "/healthz":
                 return self.send(200, b"ok\n", "text/plain")
-            if app.geo.blocked(self.client_ip()):   # visitors from BLOCKED_COUNTRIES
+            trusted, exp = app.trust.who(self.headers.get("Cookie", ""))
+            if path == "/api/whoami":
+                return self.send_json(200, {"enabled": app.trust.enabled, "trusted": trusted,
+                                            "until": time.strftime("%Y-%m-%d", time.gmtime(exp))
+                                            if trusted else None})
+            if not trusted and app.geo.blocked(self.client_ip()):   # visitors from BLOCKED_COUNTRIES
                 return self.send(403, (COUNTRY_BLOCKED + "\n").encode(), "text/plain; charset=utf-8")
             if path in app.static:
                 body, ctype = app.static[path]
-                if path in ("/", "/index.html"):
+                if path in ("/", "/index.html", "/unlock"):
                     cache = "no-cache"                                 # always revalidate the page
                 elif "v=" in self.path or path.endswith(".woff2"):
                     cache = "public, max-age=31536000, immutable"      # versioned asset URL
@@ -779,9 +1120,10 @@ def make_handler(app):
         do_HEAD = do_GET
 
         def do_POST(self):
-            if self.path.split("?", 1)[0] != "/api/scan":
+            path = self.path.split("?", 1)[0]
+            if path not in ("/api/scan", "/api/unlock", "/api/lock"):
                 return self.send_json(404, {"error": "Not found."})
-            if app.a.origin and self.headers.get("Origin", "") != app.a.origin:
+            if app.origins and self.headers.get("Origin", "") not in app.origins:
                 return self.send_json(403, {"error": "Requests are only accepted from the website."})
             if not (self.headers.get("Content-Type", "").startswith("application/json")):
                 return self.send_json(415, {"error": "Invalid request."})
@@ -792,15 +1134,40 @@ def make_handler(app):
             if not 0 < length <= 2048:
                 return self.send_json(413, {"error": "Invalid request."})
             body = self.rfile.read(length)
+            ua = self.headers.get("User-Agent", "")
+            if path == "/api/lock":
+                return self.send_json(200, {"enabled": app.trust.enabled, "trusted": None},
+                                      {"Set-Cookie": app.trust.clear()})
             try:
-                status, payload, extra = app.handle_scan(self.client_ip(), body,
-                                                         self.headers.get("User-Agent", ""))
+                if path == "/api/unlock":
+                    status, payload, extra = app.handle_unlock(self.client_ip(), body, ua)
+                else:
+                    trusted, _ = app.trust.who(self.headers.get("Cookie", ""))
+                    status, payload, extra = app.handle_scan(self.client_ip(), body, ua, trusted)
             except Exception as e:  # noqa: BLE001
                 log(f"internal error: {e!r}")
                 status, payload, extra = 500, {"error": "Internal error. Please try again later."}, {}
             self.send_json(status, payload, extra)
 
     return Handler
+
+
+def make_key(a):
+    name = a.make_key.strip().lower()
+    if not KEY_NAME_RX.match(name):
+        sys.exit("name: lowercase letters, digits, - and _ (max 32)")
+    key = secrets.token_urlsafe(24)
+    digest = hashlib.sha256(key.encode()).hexdigest()
+    sites = [o.rstrip("/") for o in a.extra_origin + [a.origin] if o] or ["https://<your site>"]
+    print(f"\nAccess key for {name} (shown only once - save it in your password manager):\n\n    {key}\n")
+    print("Magic link (keep it in your password manager too, not as a bookmark):\n")
+    for site in dict.fromkeys(sites):
+        print(f"    {site}/unlock#k={key}")
+    print("\nAdd to .env (several keys: separate with commas), then restart the containers:\n")
+    print(f"    ACCESS_KEYS={name}:{digest}")
+    if len(a.trust_secret) < 32:
+        print(f"    TRUST_SECRET={secrets.token_hex(32)}")
+    print("\nOnly the hash goes into .env. The key itself is not stored anywhere.\n")
 
 
 def main():
@@ -838,8 +1205,25 @@ def main():
     ap.add_argument("--deny-ip", action="append",
                     default=[x for x in env("DENY_IPS", "").split(",") if x], metavar="IP",
                     help="target IP that may never be checked (e.g. this server); repeatable")
+    ap.add_argument("--extra-origin", action="append",
+                    default=[x.strip() for x in env("EXTRA_ORIGINS", "").split(",") if x.strip()],
+                    metavar="ORIGIN", help="another origin whose pages may call this API, e.g. "
+                                           "https://shouldipanic.ch for its /unlock page; repeatable")
+    ap.add_argument("--access-keys", default=env("ACCESS_KEYS", ""), metavar="NAME:SHA256,...",
+                    help="access keys as name:sha256-of-key (make one with --make-key). "
+                         "Better via env PANIC_ACCESS_KEYS")
+    ap.add_argument("--trust-secret", default=env("TRUST_SECRET", ""), metavar="SECRET",
+                    help="secret that signs unlock cookies, 32+ characters, the same on every "
+                         "scanner. Better via env PANIC_TRUST_SECRET")
+    ap.add_argument("--cookie-domain", default=env("COOKIE_DOMAIN", ""), metavar="DOMAIN",
+                    help="share the unlock between subdomains, e.g. shouldipanic.ch")
+    ap.add_argument("--make-key", metavar="NAME",
+                    help="create a new access key for NAME, print it and the ACCESS_KEYS line, exit")
     ap.add_argument("--allow-private-targets", action="store_true", help=argparse.SUPPRESS)  # tests only
     a = ap.parse_args()
+    if a.make_key:
+        make_key(a)
+        return
 
     try:
         n, src = engine.load_rules()
@@ -852,6 +1236,9 @@ def main():
         log("WARNING: --allow-private-targets is set - for local testing only!")
 
     app = App(a)
+    if app.trust.enabled:
+        log(f"access keys: {', '.join(sorted(app.trust.keys))}"
+            + (f" (cookie for {app.trust.domain})" if app.trust.domain else ""))
     app.blocklists.start()
     app.geo.start()
     app.top.start()

@@ -652,6 +652,31 @@ def _check(target, timeout, log, options):
         evidence.append(f"{tech}:{where}")
         log(f"  match {tech:<20} in {where:<9}: {text!r}" + (f"  version {ver}" if ver else ""))
 
+    # known version pages ("/identity" on Plex): one extra GET each, same server, no redirects
+    for vtech, path, vrx, when in VERSION_URLS:
+        if when and not any(t in techs for t in when):
+            continue
+        vurl = urljoin(final, path)
+        try:
+            conn, resp = http_request(vurl, timeout, used_pin or pin)
+            try:
+                vstatus, vtext = resp.status, resp.read(65536).decode("utf-8", "replace")
+            finally:
+                conn.close()
+        except Exception as e:  # noqa: BLE001
+            log(f"  -> GET {vurl} (version page): {explain(e)[0]}")
+            continue
+        log(f"  -> GET {vurl} (version page): HTTP {vstatus}, {len(vtext)} chars")
+        m = re.search(vrx, vtext, re.I | re.S) if vstatus == 200 else None
+        if not m:
+            continue
+        if m.lastindex and m.group(1):
+            versions[vtech] = m.group(1)       # the product's own answer beats header guesses
+        if vtech not in techs:
+            techs.append(vtech)
+        evidence.append(f"{vtech}:version-url")
+        log(f"  match {vtech:<20} in {path}: {m.group(0)[:90]!r}")
+
     info = {"target": target, "final": final, "status": status, "server": server,
             "headers": hdr, "cookies": cookie, "body": local, "pin": used_pin, "timeout": timeout,
             "server_ips": server_ips,
@@ -711,6 +736,11 @@ def expand(arg):
 # Common web ports: standard, alternate HTTP/HTTPS, and hosting panels
 # (cPanel 2082/2083, WHM 2086/2087, DirectAdmin 2222, Plesk 8443/8880,
 #  CyberPanel 8090, LiteSpeed WebAdmin 7080)
+# A check can add its product's own ports (Plex: 32400) to 'web' with EXTRA_PORTS,
+# and list pages that reveal a version with VERSION_URLS: [(tech, path, regex, when)],
+# regex group 1 = version, when = only fetch if one of these techs was found (None: always).
+EXTRA_PORTS = ""
+VERSION_URLS = []
 DEFAULT_PORTS = "80,443,81,2082,2083,2086,2087,2222,3000,4443,7080,8000,8008,8080,8081,8090,8443,8880,8888,9443"
 
 
@@ -719,7 +749,7 @@ def parse_ports(spec):
     if spec in ("all", "-", "1-65535"):
         return list(range(1, 65536))
     if spec == "web":
-        spec = DEFAULT_PORTS
+        spec = DEFAULT_PORTS + ("," + EXTRA_PORTS if EXTRA_PORTS else "")
     ports = []
     for part in spec.split(","):
         part = part.strip()
@@ -1247,8 +1277,9 @@ def main():
 
     g = ap.add_argument_group("ports")
     g.add_argument("-p", "--ports", default="web", metavar="LIST",
-                   help="ports to scan: 'web' = 20 common web/panel ports (default), 'all' = 1-65535, "
-                        "or a list like 80,443,8000-8100")
+                   help=f"ports to scan: 'web' = {len(parse_ports('web'))} common web/panel ports"
+                        + (f" incl. {EXTRA_PORTS}" if EXTRA_PORTS else "")
+                        + " (default), 'all' = 1-65535, or a list like 80,443,8000-8100")
     g.add_argument("-n", "--no-scan", action="store_true",
                    help="no port scan, only try 443 and 80")
     g.add_argument("--scan-workers", type=int, default=0, metavar="N",
